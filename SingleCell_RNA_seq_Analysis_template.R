@@ -651,6 +651,12 @@ set.seed(1234567)
 
 ## 加载测试数据
 ## 这里选取的是芝加哥大学Yoav Gilad lab实验的Tung et al 2017的单细胞测序文章的数据
+# To illustrate cell QC, we consider a dataset of induced pluripotent stem cells generated from three 
+# different individuals (Tung et al. 2017) in Yoav Gilad’s lab at the University of Chicago. The experiments 
+# were carried out on the Fluidigm C1 platform and to facilitate the quantification both __unique molecular 
+# identifiers (UMIs)__ and __ERCC spike-ins__ were used. The data files are located in the tung folder in your 
+# working directory. These files are the copies of the original files made on the 15/03/16. We will use these 
+# copies for reproducibility purposes.
 options(stringsAsFactors = FALSE)
 set.seed(1234567)
 ## 这里直接读取过滤好的数据，是一个SCESet对象，适用于scater包的
@@ -662,6 +668,144 @@ umi <- readRDS("tung_umi.rds")
 ## Load the data and annotations:
 molecules <- read.table("molecules.txt", sep = "\t")
 anno <- read.table("annotation.txt", sep = "\t", header = TRUE)
+head(molecules[ , 1:3])
+head(anno)
+# The data consists of 3 individuals and 3 replicates and therefore has 9 batches in total.
+table(anno$individual, anno$replicate)
+umi <- SingleCellExperiment(
+  assays = list(counts = as.matrix(molecules)), 
+  colData = anno
+)
+
+# Remove genes that are not expressed in any cell:
+keep_feature <- rowSums(counts(umi) > 0) > 0
+umi <- umi[keep_feature, ]
+dim(umi)
+
+# Define control features (genes) - ERCC spike-ins and mitochondrial genes (provided by the authors):
+isSpike(umi, "ERCC") <- grepl("^ERCC-", rownames(umi))
+isSpike(umi, "MT") <- rownames(umi) %in% 
+  c("ENSG00000198899", "ENSG00000198727", "ENSG00000198888",
+    "ENSG00000198886", "ENSG00000212907", "ENSG00000198786",
+    "ENSG00000198695", "ENSG00000198712", "ENSG00000198804",
+    "ENSG00000198763", "ENSG00000228253", "ENSG00000198938",
+    "ENSG00000198840")
+
+# Calculate the quality metrics:
+umi <- calculateQCMetrics(
+  umi,
+  feature_controls = list(
+    ERCC = isSpike(umi, "ERCC"), 
+    MT = isSpike(umi, "MT")
+  )
+)
+
+########################################### Cell QC ###########################################
+# Library size
+# Next we consider the total number of RNA molecules detected per sample (if we were using read counts rather 
+# than UMI counts this would be the total number of reads). Wells with few reads/molecules are likely to have 
+# been broken or failed to capture a cell, and should thus be removed.
+hist(
+  umi$total_counts,
+  breaks = 100
+)
+abline(v = 25000, col = "red")
+
+filter_by_total_counts <- (umi$total_counts > 25000)
+table(filter_by_total_counts)
+
+# Detected genes
+# In addition to ensuring sufficient sequencing depth for each sample, we also want to make sure that the 
+# reads are distributed across the transcriptome. Thus, we count the total number of unique genes detected 
+# in each sample.
+hist(
+  umi$total_features,
+  breaks = 100
+)
+abline(v = 7000, col = "red")
+
+filter_by_expr_features <- (umi$total_features > 7000)
+table(filter_by_expr_features)
+
+## From the plot we conclude that most cells have between 7,000-10,000 detected genes, which is normal for 
+## high-depth scRNA-seq. However, this varies by experimental protocol and sequencing depth. For example, 
+## droplet-based methods or samples with lower sequencing-depth typically detect fewer genes per cell. The most 
+## notable feature in the above plot is the “heavy tail” on the left hand side of the distribution. If detection 
+## rates were equal across the cells then the distribution should be approximately normal. Thus we remove those 
+## cells in the tail of the distribution (fewer than 7,000 detected genes).
+
+# ERCCs and MTs
+# Another measure of cell quality is the ratio between ERCC spike-in RNAs and endogenous RNAs. This ratio can 
+# be used to estimate the total amount of RNA in the captured cells. Cells with a high level of spike-in RNAs 
+# had low starting amounts of RNA, likely due to the cell being dead or stressed which may result in the RNA 
+# being degraded.
+plotColData(
+  umi, 
+  x = "total_features",
+  y = "pct_counts_MT",
+  colour_by = "batch"
+)
+
+plotColData(
+  umi,
+  x = "total_features",
+  y = "pct_counts_ERCC",
+  colour_by =  "batch"
+)
+
+filter_by_ERCC <- umi$batch != "NA19098.r2"
+table(filter_by_ERCC)
+filter_by_MT <- umi$pct_counts_MT < 10
+table(filter_by_MT)
+
+## The above analysis shows that majority of the cells from NA19098.r2 batch have a very high ERCC/Endo ratio. 
+## Indeed, it has been shown by the authors that this batch contains cells of smaller size.
+
+
+########################################### Cell filtering ###########################################
+# Now we can define a cell filter based on our previous analysis:
+## Manuel cell filtering
+umi$use <- (
+    # sufficient features (genes)
+    filter_by_expr_features &
+    # sufficient molecules counted
+    filter_by_total_counts &
+    # sufficient endogenous RNA
+    filter_by_ERCC &
+    # remove cells with unusual number of reads in MT genes
+    filter_by_MT
+)
+
+## Automatic cell filtering
+# Another option available in scater is to conduct PCA on a set of QC metrics and then use automatic outlier 
+# detection to identify potentially problematic cells.
+# By default, the following metrics are used for PCA-based outlier detection:
+  
+# pct_counts_top_100_features
+# total_features
+# pct_counts_feature_controls
+# n_detected_feature_controls
+# log10_counts_endogenous_features
+# log10_counts_feature_controls
+# scater first creates a matrix where the rows represent cells and the columns represent the different QC 
+# metrics. Here, the PCA plot provides a 2D representation of cells ordered by their quality metrics. 
+# The outliers are then detected using methods from the mvoutlier package.
+assay(umi, "logcounts") <- log2(counts(umi) + 1)
+umi <- plotPCA(
+  umi,
+  size_by = "total_features", 
+  shape_by = "use",
+  pca_data_input = "pdata",
+  detect_outliers = TRUE,
+  return_SCESet = TRUE
+)
+table(umi$outlier)
+colData(umi)
+?plotPCA
+
+
+
+
 
 umi.qc <- umi[fData(umi)$use, pData(umi)$use] 
 ## counts(umi) 和  exprs(umi) 这里是不一样的。
@@ -669,8 +813,7 @@ umi.qc <- umi[fData(umi)$use, pData(umi)$use]
 endog_genes <- !fData(umi.qc)$is_feature_control
 dim(exprs( umi.qc[endog_genes, ]))
 ## 可以看到是过滤后的654个单细胞的13997个基因的表达矩阵。
-umi.qc
-toSingleCellExperiment(umi.qc)
+
 
 
 ########################################### Raw ###########################################
