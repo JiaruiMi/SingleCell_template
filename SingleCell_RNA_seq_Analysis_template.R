@@ -593,6 +593,20 @@ ggplot(as.data.frame(pData(pancreas.1)),
   ggtitle("Cells ordered by monocle pseudotime")
 
 
+#=============================================================================================
+#                                    SingleCellExperiment
+#=============================================================================================
+# SingleCellExperiment是单细胞转录组数据的基础包，大部分其它单细胞转录组数据处理的包都依赖于它，就跟芯片数据
+# 里面的ExpressionSet对象一样，需要拼了命的理解透，才有可能做好数据分析。
+
+
+
+
+
+
+
+
+
 
 
 #=============================================================================================
@@ -775,6 +789,7 @@ umi$use <- (
     # remove cells with unusual number of reads in MT genes
     filter_by_MT
 )
+table(umi$use)
 
 ## Automatic cell filtering
 # Another option available in scater is to conduct PCA on a set of QC metrics and then use automatic outlier 
@@ -795,26 +810,92 @@ umi <- plotPCA(
   umi,
   size_by = "total_features", 
   shape_by = "use",
-  pca_data_input = "pdata",
-  detect_outliers = TRUE,
-  return_SCESet = TRUE
+  run_args = list(pca_data_input = "pdata", exprs_values = 'counts', detect_outliers = TRUE),
 )
 table(umi$outlier)
-colData(umi)
-?plotPCA
+table(colData(umi))
+search()
+# Compare the default, automatic and manual cell filters. Plot a Venn diagram of the outlier cells from these 
+# filterings.
+library(limma)
+auto <- colnames(umi)[umi$outlier]
+man <- colnames(umi)[!umi$use]
+venn.diag <- vennCounts(
+  cbind(colnames(umi) %in% auto,
+        colnames(umi) %in% man)
+)
+vennDiagram(
+  venn.diag,
+  names = c("Automatic", "Manual"),
+  circle.col = c("blue", "green")
+)
+
+## In addition to removing cells with poor quality, it is usually a good idea to exclude genes where we suspect 
+## that technical artefacts may have skewed the results. Moreover, inspection of the gene expression profiles 
+## may provide insights about how the experimental procedures could be improved.
+## It is often instructive to consider the number of reads consumed by the top 50 expressed genes.
+## The distributions are relatively flat indicating (but not guaranteeing!) good coverage of the full 
+## transcriptome of these cells. However, there are several spike-ins in the top 15 genes which suggests a 
+## greater dilution of the spike-ins may be preferrable if the experiment is to be repeated.
+plotQC(umi, type = "highest-expression")
+
+filter_genes <- apply(
+  counts(umi[ , colData(umi)$use]), 
+  1, 
+  function(x) length(x[x > 1]) >= 2
+)
+rowData(umi)$use <- filter_genes
+table(filter_genes)
+
+# Dimensions of the QCed dataset (do not forget about the gene filter we defined above):
+dim(umi[rowData(umi)$use, colData(umi)$use])
+umi.qc <- umi[rowData(umi)$use, colData(umi)$use]
+logcounts(umi.qc) <- log2(calculateCPM(umi.qc, use_size_factors = FALSE) + 1)
+# Save the data
+saveRDS(umi, file = "umi.rds")
+
+################################### Data visualization ###################################
+umi <- readRDS("umi.rds")
+umi.qc <- umi[rowData(umi)$use, colData(umi)$use]
+endog_genes <- !rowData(umi.qc)$is_feature_control
+
+# Before QC：Without log-transformation:
+plotPCA(
+  umi[endog_genes, ],
+  run_args = list(exprs_values = "counts"),
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
 
 
+# Before QC: with log-transformation:
+plotPCA(
+  umi[endog_genes, ],
+  run_args = list(exprs_values = "logcounts_raws"),
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
 
+head(counts(umi))
+head(logcounts(umi))
+# After QC: without log-transformation:
+plotPCA(
+  as.data.frame(counts(umi.qc[endog_genes, ])),
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
 
-
-umi.qc <- umi[fData(umi)$use, pData(umi)$use] 
-## counts(umi) 和  exprs(umi) 这里是不一样的。
-## 前面的过滤信息，这里直接用就好了。
-endog_genes <- !fData(umi.qc)$is_feature_control
-dim(exprs( umi.qc[endog_genes, ]))
-## 可以看到是过滤后的654个单细胞的13997个基因的表达矩阵。
-
-
+plotPCA(
+  umi.qc[endog_genes, ],
+  ntop = 14214,
+  exprs_values = "logcounts",
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
 
 ########################################### Raw ###########################################
 # 先看看原始的表达值的分布情况，这里本来应该是对每一个样本画boxplot的，但是这里的样本数量太多了，
