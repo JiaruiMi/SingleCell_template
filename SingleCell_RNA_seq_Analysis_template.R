@@ -405,13 +405,12 @@ plot_ordering_genes(HSMM)
 
 # 聚类分析之前，首先对数据进行PCA降维和去噪，当然PCA需要对log转换后的数据进行分析
 plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
-
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 6, 
                         reduction_method = 'tSNE', verbose = T) 
-HSMM <- clusterCells(HSMM, num_clusters=2)
-## Distance cutoff calculated to 1.072748
-## 这里先用tSNE的聚类方法处理HSMM数据集，并可视化展示
-plot_cell_clusters(HSMM, 1, 2, color="CellType", markers=c("MYF5", "ANPEP"))
+HSMM <- clusterCells(HSMM, num_clusters = 2)
+## 这里先用tSNE的聚类方法处理HSMM数据集，并可视化展示；这个函数目前有问题，尤其是加入markers这个参数
+plot_cell_clusters(HSMM, 1, 2, color_by  = 'CellType', markers = c("MYF5", "ANPEP"))
+
 ## 可以看到并不能把细胞类型完全区分开，这个是完全有可能的，因为虽然是同一种细胞，但是有着不同的培养条件。
 head(pData(HSMM))
 head(fData(HSMM))
