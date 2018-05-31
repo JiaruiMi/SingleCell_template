@@ -385,23 +385,25 @@ pie + coord_polar(theta = "y") +
 ### to capture one of them. When a cell doesn't meet any of the criteria specified in your classification 
 ### functions, it's marked "Unknown". If it meets multiple functions' criteria, it's marked "Ambiguous". You 
 ### could just exclude such cells, but you'd be throwing out a lot of your data. In this case, we'd lose more 
-### than half of the cells!
+### than half of the cells! 针对这些Unknown的细胞，可以考虑使用无监督的分类方法，基于的函数是clusterCells。它基于
+### 的方法是即使只检测到了MYF5，但是表达了许多其它的myoblast基因
 
 
 ## 无监督聚类: 这里需要安装最新版R包才可以使用里面的一些函数，因为上面的步骤基于指定基因的表达量进行细胞分组会漏掉很多信息，
-## 所以需要更好的聚类方式。
-
+## 所以需要更好的聚类方式。在进行无监督的分类的时候，筛选高表达的HVG可以尽可能的提高信噪比
 disp_table <- dispersionTable(HSMM)
 head(disp_table)
 
-## 只有满足 条件的10198个基因才能进入聚类分析
+## 只有满足条件的10198个基因才能进入聚类分析，我们使用setOrderingFilter函数来标记那部分后续用clusterCell聚类的基因；
+## 使用plot_ordering_genes函数来图形化展示基因的表达量和离散度，高表达的基因都可以纳入考虑，红色线是在不同的平均基因
+## 表达量下离散度的估计值。
 unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
 HSMM <- setOrderingFilter(HSMM, unsup_clustering_genes$gene_id)
 plot_ordering_genes(HSMM)
-
-
 ## 这里看看基因的表达量和基因的变异度之间的关系
 ## 处在灰色阴影区域的基因会被抛弃掉，不进入聚类分析。
+
+# 聚类分析之前，首先对数据进行PCA降维和去噪，当然PCA需要对log转换后的数据进行分析
 plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
 
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 6, 
