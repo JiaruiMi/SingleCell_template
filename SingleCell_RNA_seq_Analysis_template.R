@@ -10,6 +10,7 @@
 
 
 ### Load packages，加载数据前需要将文件夹中的三个文件分别命名为“matrix.mtx", "barcodes.tsv", "genes.tsv"
+### 注意，许多scRNA-seq的pipeline返回的已经是一个稀疏矩阵了(sparse matrix)，比如CellRanger返回的mtx格式文件
 library(Seurat) # the seurat version now I am using is 2.3.1
 library(dplyr)
 library(Matrix)
@@ -34,6 +35,7 @@ dense.size / sparse.size
 
 # Initialize the Seurat object with the raw (non-normalized data).  Keep all genes expressed in >= 3 cells (~0.1% of the data). 
 # Keep all cells with at least 200 detected genes
+# 注意Seurat设定了自己的object，就叫做Seurat object
 
 pancreas_1 <- CreateSeuratObject(raw.data = pancreas_1.data, min.cells = 3, min.genes = 200, 
                                  project = "10X_Pancreas_1")
@@ -210,7 +212,7 @@ DoHeatmap(object = pancreas_1, genes.use = top10$gene, slim.col.label = TRUE, re
 
 
 #=============================================================================================
-#                            "Monocle2" package (Monocle 2.8.0)
+#                      "Monocle2" package (Monocle 2.8.0)  生信技能树
 #=============================================================================================
 # 在nature methods杂志发表的文章，更新为monocle2版本并且更换了主页，功能也不仅仅是差异分析那么简单。还包括pseudotime,
 # clustering分析，而且还可以进行基于转录本的差异分析，其算法是BEAM (used in branch analysis) and Census (the core of relative2abs)，
@@ -246,6 +248,13 @@ dim(HSMM_expr_matrix)
 head(HSMM_gene_annotation)
 head(HSMM_sample_sheet)
 
+# 这个数据集中包含了两种细胞类型：
+#  In the myoblast experiment, the culture contains fibroblasts that came from the original muscle biopsy used 
+# to establish the primary cell culture. Myoblasts express some key genes that fibroblasts don't. Selecting 
+# only the genes that express, for example, sufficiently high levels of MYF5 excludes the fibroblasts. Likewise, 
+# fibroblasts express high levels of ANPEP (CD13), while myoblasts tend to express few if any transcripts of 
+# this gene.
+
 
 ###################################### 构建S4对象，CellDataSet ######################################
 # 主要是读取表达矩阵和样本描述信息，这里介绍两种方式，一种是读取基于 subjunc+featureCounts 分析后的reads counts矩阵，
@@ -256,23 +265,26 @@ head(HSMM_sample_sheet)
 pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
 fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
 
-
 # First create a CellDataSet from the relative expression levels
 
-## 这里仅仅是针对rpkm表达矩阵的读取
+## 这里仅仅是针对rpkm表达矩阵的读取，我们选取的统计学模型是tobit
+## Tobits are truncated normal distributions. Using tobit() will tell Monocle to log-transform your data where 
+## appropriate. Do not transform it yourself.
 HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),   
                        phenoData = pd, 
                        featureData = fd,
                        lowerDetectionLimit=0.1,
                        expressionFamily=tobit(Lower=0.1))
 
-# Next, use it to estimate RNA counts
+# Next, use it to estimate RNA counts. RPC的含义是mRNAs per cell
 rpc_matrix <- relative2abs(HSMM)
 rpc_matrix[1:10,1:5] 
 
 ## rpkm格式的表达值需要转换成reads counts之后才可以进行下游分析！
 
-# Now, make a new CellDataSet using the RNA counts
+# Now, make a new CellDataSet using the RNA counts，既然转变成了counts data，则服从了负二项分布的规律
+# 统计学模型相应的进行改变：Negative binomial distribution with fixed variance (which is automatically 
+# calculated by Monocle). Recommended for most users.
 HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
                        phenoData = pd, 
                        featureData = fd,
@@ -281,29 +293,34 @@ HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
 
 ## 下面的分析，都基于内置数据构建的S4对象，HSMM
 
-###################################### 过滤低质量细胞和未检测到的基因 ######################################
-# 基于基因的过滤
-##  这里只是把 基因挑选出来，并没有对S4对象进行过滤操作。 这个 detectGenes 函数还计算了 每个细胞里面表达的基因数量。
-
+# 必要的矫正（量化因子和散度）：Size factors help us normalize for differences in mRNA recovered across cells, 
+# and "dispersion" values will help us perform differential expression analysis later.
 HSMM <- estimateSizeFactors(HSMM)
 HSMM <- estimateDispersions(HSMM)
 ### Warning: Deprecated, use tibble::rownames_to_column() instead.
 
+###################################### 过滤低质量细胞和未检测到的基因 ######################################
+# 基于基因的过滤
+##  这里只是把基因挑选出来，并没有对S4对象进行过滤操作。 这个detectGenes函数还计算了每个细胞里面表达的基因数量。
 HSMM <- detectGenes(HSMM, min_expr = 0.1)
 print(head(fData(HSMM)))
+
 ## 对每个基因都检查一下在多少个细胞里面是有表达量的。
 ## 只留下至少在10个细胞里面有表达量的那些基因，做后续分析
 expressed_genes <- row.names(subset(fData(HSMM), num_cells_expressed >= 10))
 length(expressed_genes) ## 只剩下了14224个基因
+
+## The HSMM dataset included with this package has scoring columns built in. 说白了就是写质控数据反应这个细胞的测序
+## 结果能不能在后续进行使用
 print(head(pData(HSMM))) 
 
-# 基于样本表达量进行过滤
+# 基于样本表达量进行过滤，以下代码说白了就是眼见为实，看看不同细胞的mRNA的分布情况
 ## 这里选择的是通过不同时间点取样的细胞来进行分组查看，把超过2个sd 的那些样本的临界值挑选出来，下一步过滤的时候使用。
 pData(HSMM)$Total_mRNAs <- Matrix::colSums(exprs(HSMM))
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs < 1e6]
-upper_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) +
+upper_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) +    # 用来在后面的图上画线，设定比较高的阈值是防止出现双细胞或者多细胞的情况出现
                      2*sd(log10(pData(HSMM)$Total_mRNAs)))
-lower_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) -
+lower_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) -    # 用来在后面的图上画线
                      2*sd(log10(pData(HSMM)$Total_mRNAs)))
 table(pData(HSMM)$Hours)
 qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
@@ -315,6 +332,7 @@ qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs > lower_bound & 
                pData(HSMM)$Total_mRNAs < upper_bound]                                 
 HSMM <- detectGenes(HSMM, min_expr = 0.1)
+HSMM
 L <- log(exprs(HSMM[expressed_genes,]))
 melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
 qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, size=0.5, color='red') + 
@@ -326,22 +344,32 @@ qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, 
 # 根据指定基因对单细胞转录组表达矩阵进行分类
 ## 下面这个代码只适用于这个测试数据， 主要是生物学背景知识，用MYF5基因和ANPEP基因来对细胞进行分类，可以区分Myoblast和Fibroblast。
 ## 如果是自己的数据，建议多读读paper看看如何选取合适的基因，或者干脆跳过这个代码。
-## 根据基因名字找到其在表达矩阵的ID，这里是ENSEMBL数据库的ID
+## 根据基因名字找到其在表达矩阵的ID，这里是ENSEMBL数据库的ID（MYF5_id和ANPEP_id）
 MYF5_id <- row.names(subset(fData(HSMM), gene_short_name == "MYF5"))
 ANPEP_id <- row.names(subset(fData(HSMM), gene_short_name == "ANPEP"))
 ## 这里选取的基因取决于自己的单细胞实验设计
+
+# 根据特征基因的表达量来给细胞赋予cell type属性，深度理解函数newCellTypeHierarchy()
+# Monocle provides a simple system for tagging cells based on the expression of marker genes of your choosing. 
+# You simply provide a set of functions that Monocle can use to annotate each cell. For example, you could 
+# provide a function for each of several cell types. These functions accept as input the expression data for 
+# each cell, and return TRUE to tell Monocle that a cell meets the criteria defined by the function. So you 
+# could have one function that returns TRUE for cells that express myoblast-specific genes, another function 
+# for fibroblast-specific genes, etc. Here's an example of such a set of "gating" functions:
+# The functions are organized into a small data structure called a CellTypeHierarchy, that Monocle uses to 
+# classify the cells. You first initialize a new CellTypeHierarchy object, then register your gating functions 
+# within it. Once the data structure is set up, you can use it to classify all the cells in the experiment:
 cth <- newCellTypeHierarchy()
 
 cth <- addCellType(cth, "Myoblast", classify_func = function(x) { x[MYF5_id,] >= 1 })
 cth <- addCellType(cth, "Fibroblast", classify_func = function(x){ x[MYF5_id,] < 1 & x[ANPEP_id,] > 1 })
 
-HSMM <- classifyCells(HSMM, cth, 0.1)
-HSMM <- clusterCells(HSMM)
+HSMM <- classifyCells(HSMM, cth, 0.1) ## 这个时候的HSMM已经被改变了，增加了属性(phenoData中的CellType)。
+HSMM 
+## The function classifyCells applies each gating function to each cell, classifies the cells according to the 
+## gating functions, and returns the CellDataSet with a new column, CellType in its pData table. We can now 
+## count how many cells of each type there are in the experiment.
 pData(HSMM)$CellType
-### Warning: Deprecated, use tibble::rownames_to_column() instead.
-
-### Warning: Deprecated, use tibble::rownames_to_column() instead.
-### 这个时候的HSMM已经被改变了，增加了属性。
 table(pData(HSMM)$CellType)
 
 pie <- ggplot(pData(HSMM), aes(x = factor(1), fill = factor(CellType))) +
@@ -351,7 +379,14 @@ pie + coord_polar(theta = "y") +
 
 ### 可以看到还有很大一部分细胞仅仅是根据这两个基因的表达量是无法成功的归类的。这个是很正常的，
 ### 因为单细胞转录组测序里面的mRNA捕获率不够好。 通过这个步骤成功的给HSMM这个S4对象增加了一个属性，就是CellType，
-### 在下面的分析中会用得着。
+### 在下面的分析中会用得着。注意Unknown意味这一个条件都没有满足；ambiguous意味着满足多个分类指标
+### Note that many cells are marked "Unknown". This is common, largely because of the low rate of mRNA capture 
+### in most single-cell RNA-Seq experiments. A cell might express a few MYF5 mRNAs, but we weren't lucky enough 
+### to capture one of them. When a cell doesn't meet any of the criteria specified in your classification 
+### functions, it's marked "Unknown". If it meets multiple functions' criteria, it's marked "Ambiguous". You 
+### could just exclude such cells, but you'd be throwing out a lot of your data. In this case, we'd lose more 
+### than half of the cells!
+
 
 ## 无监督聚类: 这里需要安装最新版R包才可以使用里面的一些函数，因为上面的步骤基于指定基因的表达量进行细胞分组会漏掉很多信息，
 ## 所以需要更好的聚类方式。
@@ -533,6 +568,98 @@ plot_genes_in_pseudotime(cds_subset, color_by="Hours")
 ## Census: a normalization method to convert of single-cell mRNA transcript to relative transcript counts.
 ## BEAM : to test for branch-dependent gene expression by formulating the problem as a contrast between two negative binomial GLMs.
 ## Branch time point detection algorithm
+
+#=============================================================================================
+#
+#         "Monocle2" package (Monocle 2.8.0)  Cole Trapnell online tutorial（不要轻易run）
+#
+#=============================================================================================
+
+library(Biobase)
+library(knitr)
+library(reshape2)
+library(ggplot2)
+library(HSMMSingleCell)
+library(monocle)
+library(M3Drop)
+
+################################ STEP 1: The CellDataSet class ################################
+# Monocle倾向于加载absolute transcript counts(from UMI experiments)，或者经过矫正后的数据(FPKM or TPM).可以接受
+# 来自与10X Genomics公司的CellRange产生的数据。有一点非常值得注意的是，Although Monocle can be used with raw 
+# read counts, these are not directly proportional to expression values unless you normalize them by length, 
+# so some Monocle functions could produce nonsense results. If you don't have UMI counts, We recommend you 
+# load up FPKM or TPM values instead of raw read counts.也就是Monocle后续的计算对原始的reads数不是很友好，不建议
+# 加载原始reads。
+# FPKM或者TPM的矫正后的定量值来自于Cufflinks。当然在后续的统计模型的处理时，Monocle默认使用对应于UMI的绝对定量
+# 结果，并采用负二项分布的统计模型进行计算和下游数据的处理。如果使用FPKM或者TPM，则建议修改模型的设置。
+# 在加载数据时，除了常规三张表之间的匹配关系意外，one of the columns of the featureData should be named "gene_short_name".
+
+# 非常重要的一点，不要自说自话自己normalize数据：if you do have UMI data, you should not normalize it yourself prior 
+# to creating your CellDataSet. You should also not try to convert the UMI counts to relative abundances (by 
+# converting it to FPKM/TPM data). You should not use relative2abs() as discussed below in the section on 
+# Converting TPM to mRNA Counts. Monocle will do all needed normalization steps internally. Normalizing it 
+# yourself risks breaking some of Monocle's key steps.
+
+# Monocle最建议加载的数据是transcript count data，尤其是基于UMI序列的绝对定量
+
+pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
+fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
+HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
+                       phenoData = pd, featureData = fd)
+
+# FPKM/TPM values are generally log-normally distributed, while UMIs or read counts are better modeled with 
+# the negative binomial. To work with count data, specify the negative binomial distribution as the 
+# expressionFamily argument to newCellDataSet。FPKM/TPM服从log转换后的正态分布；count data服从负二项分布。
+# 所以在统计学模型选择的时候，建议参考：http://cole-trapnell-lab.github.io/monocle-release/docs/#getting-started-with-monocle
+# Do not run
+HSMM <- newCellDataSet(count_matrix,
+                       phenoData = pd,
+                       featureData = fd,
+                       expressionFamily=negbinomial.size())
+#### 针对非常大的数据集，尤其是有上万个细胞，建议使用稀疏矩阵：理论基础是，大部分细胞中的基因数是0
+# Using sparse matrices can help you work with huge datasets on a typical computer. We generally recommend the 
+# use of sparseMatrices for most users, as it speeds up many computations even for more modestly sized datasets.
+# To work with your data in a sparse format, simply provide it to Monocle as a sparse matrix from the Matrix package
+# The output from a number of RNA-Seq pipelines, including CellRanger, is already in a sparseMatrix format (e.g. MTX). 
+# If so, you should just pass it directly to newCellDataSet without first converting it to a dense matrix (via as.matrix(), because that may exceed your available memeory.
+
+
+
+############################ Importing & exporting data with other packages ############################
+# Monocle is able to convert Seurat objects from the package "Seurat" and SCESets from the package "scater" into 
+# CellDataSet objects that Monocle can use. It's also worth noting that the function will also work with SCESets 
+# from "Scran". To convert from either a Seurat object or a SCESet to a CellDataSet, execute the function 
+# importCDS() as shown:
+
+# Where 'data_to_be_imported' can either be a Seurat object
+# or an SCESet.
+importCDS(data_to_be_imported)
+
+# We can set the parameter 'import_all' to TRUE if we'd like to
+# import all the slots from our Seurat object or SCESet.
+# (Default is FALSE or only keep minimal dataset)
+importCDS(data_to_be_imported, import_all = TRUE)
+
+# Monocle can also export data from CellDataSets to the "Seurat" and "scater" packages through the function exportCDS():
+lung <- load_lung()
+
+# To convert to Seurat object
+lung_seurat <- exportCDS(lung, 'Seurat')
+
+# To convert to SCESet
+lung_SCESet <- exportCDS(lung, 'Scater')
+
+
+############################ Estimate size factors and dispersions ############################
+# Size factors help us normalize for differences in mRNA recovered across cells, and "dispersion" values will 
+# help us perform differential expression analysis later.
+# estimateSizeFactors() and estimateDispersions() will only work, and are only needed, if you are working with 
+# a CellDataSet with a negbinomial() or negbinomial.size() expression family.
+HSMM <- estimateSizeFactors(HSMM)
+HSMM <- estimateDispersions(HSMM)
+
+
+
 
 
 #=============================================================================================
