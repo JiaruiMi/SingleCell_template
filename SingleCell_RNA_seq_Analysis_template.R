@@ -412,53 +412,72 @@ HSMM <- clusterCells(HSMM, num_clusters = 2)
 plot_cell_clusters(HSMM, 1, 2, color_by  = 'CellType', markers = c("MYF5", "ANPEP"))
 
 ## 可以看到并不能把细胞类型完全区分开，这个是完全有可能的，因为虽然是同一种细胞，但是有着不同的培养条件。
-head(pData(HSMM))
+head(pData(HSMM)) # 在这里另外一个问题是pdata中的Cluster，只有一个，这是不符合常理的，需要debug一下。
 head(fData(HSMM))
 ## 所以这里也区分一下 培养基， a high-mitogen growth medium (GM) to a low-mitogen differentiation medium (DM). 
 plot_cell_clusters(HSMM, 1, 2, color="Media")
 
 
-
 ## 因为我们假设就2种细胞类型，所以在做聚类的时候可以把这个参数添加进去，这样可以去除无关变量的干扰。
+## Monocle allows us to subtract the effects of "uninteresting" sources of variation to reduce their 
+## impact on the clustering. You can do this with the residualModelFormulaStr argument to clusterCells 
+## and several other Monocle functions. This argument accepts an R model formula string specifying 
+## the effects you want to subtract prior to clustering.
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 2, reduction_method = 'tSNE', 
                         residualModelFormulaStr="~Media + num_genes_expressed", verbose = T) #
 HSMM <- clusterCells(HSMM, num_clusters=2)
 ## Distance cutoff calculated to 1.284778
 plot_cell_clusters(HSMM, 1, 2, color="CellType") 
 
-
+## Now that we've accounted for some unwanted sources of variation, we're ready to take another crack at 
+## classifying the cells by unsupervised clustering:
 plot_cell_clusters(HSMM, 1, 2, color="Cluster") + facet_wrap(~CellType)
 
 
 
-# 半监督聚类
+## 半监督聚类，也就是利用一部分marker genes来进行分析。正如之前所说，如果我们只单单用一个marker来指示细胞的类型的
+## 时候，某些细胞不能很好的区分，因此我们需要用那些与指明的marker gene有相同表达差异的gene，构建一个gene list
 ## 这里的差异分析非常耗时
 marker_diff <- markerDiffTable(HSMM[expressed_genes,], 
                                cth, 
                                residualModelFormulaStr="~Media + num_genes_expressed",
                                cores=1)
 head(marker_diff)
+### The function markerDiffTable takes a CellDataSet and a CellTypeHierarchy and classifies all the cells into 
+### types according to your provided functions. It then removes all the "Unknown" and "Ambiguous" functions 
+### before identifying genes that are differentially expressed between the types. Often it's best to pick the 
+### top 10 or 20 genes that are most specific for each cell type. This ensures that the clustering genes aren't 
+### dominated by markers for one cell type. You generally want a balanced panel of markers for each type if 
+### possible. Monocle provides a handy function for ranking genes by how restricted their expression is for 
+### each type.
 
 ## 就是对每个基因增加了pval和qval两列信息，挑选出那些在不同media培养条件下显著差异表达的基因，310个，
 candidate_clustering_genes <- row.names(subset(marker_diff, qval < 0.01))
+candidate_clustering_genes; length(candidate_clustering_genes)
 
-## 计算这310个基因在不同的celltype的specificity值
+## 计算这310个基因在不同的celltype的specificity值，一共620行，每个gene在两种细胞类型中都有各自的specificity
 marker_spec <- calculateMarkerSpecificity(HSMM[candidate_clustering_genes,], cth)
-head(selectTopMarkers(marker_spec, 3)) 
+head(selectTopMarkers(marker_spec, 3)) # 这句代码返回myoblast和fibroblast的3个特征基因
+### 这个列表中的specificity的值是介于0到1之间，越接近于1提示在某一种细胞类型中越显得特异，可以用它来定义某个已知
+### 细胞类型的marker genes或者用这些marker来定义新的细胞类型。
 
+# To cluster the cells, we'll choose the top 500 markers for each of these cell types:（这句话没有理解，为什么是每种细胞类型500个gene？）
 semisup_clustering_genes <- unique(selectTopMarkers(marker_spec, 500)$gene_id)
 HSMM <- setOrderingFilter(HSMM, semisup_clustering_genes)
 plot_ordering_genes(HSMM)
-
 ## 重新挑选基因，只用黑色高亮的基因来进行聚类。
-plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
 
-HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 2, reduction_method = 'tSNE', 
+plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
+HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 3, 
+                        norm_method = 'log',
+                        reduction_method = 'tSNE', 
                         residualModelFormulaStr="~Media + num_genes_expressed", verbose = T) 
 HSMM <- clusterCells(HSMM, num_clusters=2) 
 ## Distance cutoff calculated to 1.02776
 plot_cell_clusters(HSMM, 1, 2, color="CellType")
+pData(HSMM)$CellType
 
+## Impute cell type，理论上这一步应该会把unknown和ambiguous的归类到myoblast或者fibroblast
 HSMM <- clusterCells(HSMM,
                      num_clusters=2, 
                      frequency_thresh=0.1,
@@ -474,7 +493,7 @@ pie + coord_polar(theta = "y") +
 ########################################### Pseudotime分析 ###########################################
 # 主要目的是：Constructing Single Cell Trajectories
 
-# 发育过程中细胞状态是不断变化的，monocle包利用算法学习所有基因的表达模式来把每个细胞安排到各各自的发展轨迹。 
+# 发育过程中细胞状态是不断变化的，monocle包利用算法学习所有基因的表达模式来把每个细胞安排到各自的发展轨迹。 
 # 在大多数生物学过程中，参与的细胞通常不是同步发展的，只有单细胞转录组技术才能把处于该过程中各个中间状态的细胞分离开来，
 # 而monocle包里面的pseudotime分析方法正是要探究这些。
 # choose genes that define a cell’s progress
@@ -486,7 +505,9 @@ pie + coord_polar(theta = "y") +
 # Selecting genes with high dispersion across cells
 # Ordering cells using known marker genes
 
-# 无监督的Pseudotime分析
+###### Trajectory step 1: choose genes that define a cell's progress  
+
+# 无监督的Pseudotime分析, 先不要执行上方impute cell type的环节
 HSMM_myo <- HSMM[,pData(HSMM)$CellType == "Myoblast"]   
 HSMM_myo <- estimateDispersions(HSMM_myo)
 ## Warning: Deprecated, use tibble::rownames_to_column() instead.
@@ -494,27 +515,99 @@ HSMM_myo <- estimateDispersions(HSMM_myo)
 
 # 使用不同的策略会给出不同的fData(State)
 ## 策略1：  Ordering based on genes that differ between clusters
-if(F){
-  diff_test_res <- differentialGeneTest(HSMM_myo[expressed_genes,],
-                                        fullModelFormulaStr="~Media")
-  ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
-}
+### find all genes that are differentially expressed in response to the switch from growth medium to differentiation medium:
+diff_test_res <- differentialGeneTest(HSMM_myo[expressed_genes,],     # 这一步比较费时
+                                      fullModelFormulaStr="~Media")
+ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
 ## 策略2：Selecting genes with high dispersion across cells
 disp_table <- dispersionTable(HSMM_myo)
 ordering_genes <- subset(disp_table, 
                          mean_expression >= 0.5 & 
                            dispersion_empirical >= 1 * dispersion_fit)$gene_id
 
+
+
 HSMM_myo <- setOrderingFilter(HSMM_myo, ordering_genes)
 plot_ordering_genes(HSMM_myo)
 ## Warning: Transformation introduced infinite values in continuous y-axis
 
+
+##### Trajectory step 2: reduce data dimensionality
 ## 挑选变异度大的基因，如图所示
-HSMM_myo <- reduceDimension(HSMM_myo, max_components=2)
+HSMM_myo <- reduceDimension(HSMM_myo, max_components=2, method = 'DDRTree')
+
+
+##### Trajectory step 3: order cells along the trajectory
 HSMM_myo <- orderCells(HSMM_myo)
+pData(HSMM_myo)
 ## 排序好的细胞可以直接按照发育顺序可视化
-plot_cell_trajectory(HSMM_myo, color_by="State")
-table(pData(HSMM_myo)$State)
+plot_cell_trajectory(HSMM_myo, color_by="Hours")
+
+plot_cell_trajectory(HSMM_myo, color_by = "State")
+
+
+GM_state <- function(cds){
+  if (length(unique(pData(cds)$State)) > 1){
+    T0_counts <- table(pData(cds)$State, pData(cds)$Hours)[,"0"]
+    return(as.numeric(names(T0_counts)[which
+                                       (T0_counts == max(T0_counts))]))
+  } else {
+    return (1)
+  }
+}
+HSMM_myo <- orderCells(HSMM_myo, root_state = GM_state(HSMM_myo))
+plot_cell_trajectory(HSMM_myo, color_by = "Pseudotime")
+
+
+plot_cell_trajectory(HSMM_myo, color_by = "State") +
+  facet_wrap(~State, nrow = 1)
+
+
+
+blast_genes <- row.names(subset(fData(HSMM_myo),
+                                gene_short_name %in% c("CCNB2", "MYOD1", "MYOG")))
+plot_genes_jitter(HSMM_myo[blast_genes,],
+                  grouping = "State",
+                  min_expr = 0.1)
+
+
+
+
+HSMM_expressed_genes <-  row.names(subset(fData(HSMM_myo),
+                                          num_cells_expressed >= 10))
+HSMM_filtered <- HSMM_myo[HSMM_expressed_genes,]
+my_genes <- row.names(subset(fData(HSMM_filtered),
+                             gene_short_name %in% c("CDK1", "MEF2C", "MYH3")))
+cds_subset <- HSMM_filtered[my_genes,]
+plot_genes_in_pseudotime(cds_subset, color_by = "Hours")
+
+
+##### Alternative choices for ordering genes
+HSMM_myo <- detectGenes(HSMM_myo, min_expr = 0.1)
+fData(HSMM_myo)$use_for_ordering <-
+  fData(HSMM_myo)$num_cells_expressed > 0.05 * ncol(HSMM_myo)
+
+plot_pc_variance_explained(HSMM_myo, return_all = F)
+
+HSMM_myo <- reduceDimension(HSMM_myo,
+                            max_components = 2,
+                            norm_method = 'log',
+                            num_dim = 3,
+                            reduction_method = 'tSNE',
+                            verbose = T)
+
+HSMM_myo <- clusterCells(HSMM_myo, verbose = F)
+
+plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Cluster)')
+plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Hours)')
+
+plot_rho_delta(HSMM_myo, rho_threshold = 2, delta_threshold = 4 )
+
+
+
+
+
+
 
 ########################################### 直接做差异分析 ###########################################
 # 前面的聚类分析和Pseudotime分析都需要取基因子集，就已经利用过差异分析方法来挑选那些有着显著表达差异的基因。
