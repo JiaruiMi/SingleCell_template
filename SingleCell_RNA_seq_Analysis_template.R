@@ -896,15 +896,23 @@ suppressMessages(URMM_all_fig1b <- estimateDispersions(URMM_all_fig1b))
 # 起点之间的距离，找到这样一个最短的距离。而这个trajectory的全长是细胞从起始状态到终末状态转录本变化的总差异。
 
 # Monocle的分析流程分为三大步：
-## Step 1: choosing genes that define progress 选择用于建立progress的基因集(发生表达上调或者下调的基因)
+## Step 1: choosing genes that define progress 选择用于建立progress的基因集(发生表达上调或者下调的基因)。这一步可以
+##        理解为feature seletion的一部分。在单细胞分析中，部分低表达gene可能会带来分析的噪声，但也可能蕴含了与细胞
+##        状态相关的重要信息。Monocle善于分析那些variable(但是并非转录噪声)的基因。在这部分基因集选取的时候，我们既可以
+##        采用完全非监督的方法，或者使用半监督的方法(整合之前的先验知识)来构建monocle的trajectory
 ##        在选择这个基因集的时候，尽量减少使用先验知识可以最大程度的减少偏倚，在这里monocle非常建议使用一种非监督的机器学习
 ##        方法，称为dpFeature。To use dpFeature, we first select superset of feature genes as genes expressed in at least 5% of all the cells.
-## Step 2: reducing the dimensionality of the data 对数据进行降维处理
-## Step 3: ordering the cells in pseudotime 将细胞按照顺序排列在pseudotime上
+## Step 2: reducing the dimensionality of the data 对数据进行降维处理，这一步是在得到feature selection的基因集基础之上的
+##        数据降维的方法成为reverse graph embedding
+## Step 3: ordering the cells in pseudotime 将细胞按照顺序排列在pseudotime上:
+##        将表达数据投射到低维空间后，Monocle就可以来学习并产生这个trajectory了。Monocle假设trajectory是一个树型结构
+##        一端是根，另一端是叶子。Monocle的任务就是找到最佳的树�型结构。这个方法称为manifold learning。Pseudotime vlaue
+##        是从细胞的位置返回到根的距离。
 
 
-#1. set ordering genes for the fig1b
+#1. set ordering genes for the fig1b，将这部分gene赋值给一个对象，后续的很多分析都是要基于这个对象的。
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = row.names(fig1b))
+plot_ordering_genes(URMM_all_fig1b)
 ## By selecting only the high loading PCs, we effectively only focus on the more interesting biological variations.
 URMM_pc_variance <- plot_pc_variance_explained(URMM_all_fig1b, return_all = T, norm_method = 'log') # 碎石图，通过肉眼看哪些PC比较重要
 URMM_pc_variance  # 碎石图，通过肉眼看哪些PC比较重要，从而达到降维和去噪的作用。
@@ -924,6 +932,8 @@ URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, max_components=2, norm_method 
 ## setting, we will find the top n cells with high Δ with Δ among the top 50% range. The default setting often gives good 
 ## clustering.
 URMM_all_fig1b <- clusterCells(URMM_all_fig1b, verbose = F, num_clusters = 5)
+### 这一步比较tricky，我们知道这个clustering需要涉及rho和delta两个参数，可以认为设定，比如：
+### rho_threshold = 2, delta_threshold = 4, skip_rho_sigma = T；其中(skip_rho_sigma = T) which enables us to skip the calculation of the Ρ, Σ.
 
 #4. check the clusters，图形化展示聚类结果
 options(repr.plot.width=4, repr.plot.height=3)
@@ -934,11 +944,16 @@ plot_rho_delta(URMM_all_fig1b) # We also provide the decision plot for users to 
 
 URMM_all_fig1b@expressionFamily <- negbinomial.size()
 pData(URMM_all_fig1b)$Cluster <- factor(pData(URMM_all_fig1b)$Cluster)
+## 当我们确定cluster的结果是有意义的，下面我们可以进行差异基因的分析来看看到底是哪些基因可以用来对细胞进行分群；
 ## 下面这一步非常耗时
 URMM_clustering_DEG_genes <- differentialGeneTest(URMM_all_fig1b, fullModelFormulaStr = '~Cluster', cores = detectCores() - 2)
+URMM_clustering_DEG_genes
 
-#use all DEG gene from the clusters
+# 然后我们取所有基因来作为trajectory的ordering genes. use all DEG gene from the clusters
+URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)]
+## 下面几句代码有试验一下
 URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)][1:1000]
+
 
 
 ########################################## 第五步，在野生型细胞中重构发育的trajectory ##########################################
@@ -964,7 +979,6 @@ options(repr.plot.width=6, repr.plot.height=5)
 plot_cell_trajectory(URMM_all_abs, color_by = 'Type')
 options(repr.plot.width=8, repr.plot.height=8)
 plot_cell_trajectory(URMM_all_abs, color_by = 'Type') + facet_wrap(~paper_cluster)
-
 
 
 
