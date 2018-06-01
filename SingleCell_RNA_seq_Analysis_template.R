@@ -896,7 +896,8 @@ suppressMessages(URMM_all_fig1b <- estimateDispersions(URMM_all_fig1b))
 # 起点之间的距离，找到这样一个最短的距离。而这个trajectory的全长是细胞从起始状态到终末状态转录本变化的总差异。
 
 # Monocle的分析流程分为三大步：
-## Step 1: choosing genes that define progress 选择用于建立progress的基因集(发生表达上调或者下调的基因)。这一步可以
+## Step 1: Monocle非常重要的特点是在进行pseudotime的时候需要有feature selection一步，不能纳入所有基因
+##        choosing genes that define progress 选择用于建立progress的基因集(发生表达上调或者下调的基因)。这一步可以
 ##        理解为feature seletion的一部分。在单细胞分析中，部分低表达gene可能会带来分析的噪声，但也可能蕴含了与细胞
 ##        状态相关的重要信息。Monocle善于分析那些variable(但是并非转录噪声)的基因。在这部分基因集选取的时候，我们既可以
 ##        采用完全非监督的方法，或者使用半监督的方法(整合之前的先验知识)来构建monocle的trajectory
@@ -985,9 +986,7 @@ plot_cell_trajectory(URMM_all_abs, color_by = 'Type') + facet_wrap(~paper_cluste
 ########################################## 第七步，在所有细胞和野生型细胞中展示树型图 ##########################################
 ## Trajectories are reconstructed in 4 dimensions but can be visualized as a tree layout in two dimensions
 ## both the WT and full dataset include the similar branch points
-
-
-
+## 根据细胞的种类和cluster赋予其相应的颜色，用于图形化展示。
 type_vec <- unique(pData(URMM_all_abs)$Type)
 type_cols <- RColorBrewer::brewer.pal(9, name = 'Set1')
 type_cols[6] <- "#6A3D9A"
@@ -998,6 +997,7 @@ cluster_cols <- type_cols
 cluster_cols[10] <- "#0600FC"
 names(cluster_cols) <- cluster_vec
 
+## 绘图：一步法，传入表达矩阵即可
 options(repr.plot.width=6, repr.plot.height=4)
 plot_complex_cell_trajectory(URMM_all_fig1b[, ], color_by = 'cluster', show_branch_points = T, cell_size = 0.5, cell_link_size = 0.3) + facet_wrap(~Type, nrow = 1) + scale_size(range = c(0.2, 0.2)) +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) + scale_color_manual(values = cluster_cols, name = "cluster")
@@ -1007,13 +1007,8 @@ plot_complex_cell_trajectory(URMM_all_abs[, ], color_by = 'paper_cluster', show_
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) + scale_color_manual(values = cluster_cols, name = "cluster")
 
 
-
-
-
-
-
-
-
+########################################## 第八步，将树型图展示在二维空间中 ##########################################
+## 图所包含的内容是和上面一样的，只不过投射到一个二维的空间中(前两个dimension)
 options(repr.plot.width=5, repr.plot.height=3)
 plot_cell_trajectory(URMM_all_fig1b[, ], color_by = 'cluster', show_branch_points = T, theta = 120, cell_size = 0.5, cell_link_size = 0.3) + facet_wrap(~Type, nrow = 1) + scale_size(range = c(0.2, 0.2)) +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) + scale_color_manual(values = cluster_cols, name = "cluster") +theme (legend.position="right", legend.title=element_blank()) +
@@ -1025,21 +1020,15 @@ plot_cell_trajectory(URMM_all_abs[, ], color_by = 'Type', show_branch_points = T
   stat_density2d(color='black', h = 8, alpha=I(0.25), size=I(0.25))
 
 
-
-
-
-
-
-
-
-
-
-
-
+##################################### 第九步，在树型结构的每一个节点(或者叶子)观察细胞类型的分布 #####################################
+## 非常简单，实际就是构建一个matrix，matrix中每一个entry
 state_cluster_stat <- table(pData(URMM_all_fig1b)[, c('State', 'cluster')])
+state_cluster_stat # 一定要亲眼看看
 
 state_cluster_stat <- apply(state_cluster_stat, 2, function(x) x / sum(x))
+state_cluster_stat
 state_cluster_stat_ordered <- t(state_cluster_stat)
+state_cluster_stat
 
 options(repr.plot.width=3, repr.plot.height=3)
 pheatmap::pheatmap(state_cluster_stat_ordered, cluster_cols = F, cluster_rows = F, color = colorRampPalette(RColorBrewer::brewer.pal(n=9, name='Greys'))(10))
@@ -1050,7 +1039,8 @@ state_cluster_stat <- apply(state_cluster_stat, 2, function(x) x / sum(x))
 state_cluster_stat_ordered <- t(state_cluster_stat)
 
 options(repr.plot.width=3, repr.plot.height=3)
-pheatmap::pheatmap(state_cluster_stat_ordered, cluster_cols = F, cluster_rows = F, color = colorRampPalette(RColorBrewer::brewer.pal(n=9, name='Greys'))(10))
+pheatmap::pheatmap(state_cluster_stat_ordered, cluster_cols = F, cluster_rows = F, 
+                   color = colorRampPalette(RColorBrewer::brewer.pal(n=9, name='Greys'))(10))
 
 
 
