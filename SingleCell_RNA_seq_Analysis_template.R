@@ -781,20 +781,21 @@ suppressMessages(library(netbiov))
 ## convert the FPKM values to relative census counts (但是在进行下游分析的时候，一般会把FPKM转换成census counts)
 ## create another CDS storing the relative census counts
 
-#reading the exprs data and create a cell dataset:
+# reading the exprs data and create a cell dataset:
+## 按照常规构建好exprs，pd(pData或者colData, 在这里是sample_sheet)和fd(fData或者rowData, 在这里是gene_ann)
 setwd('/Users/mijiarui/Nature_Biotechnology_Paper/simpleSingleCell/monocle2-rge-paper/Supplementary_scripts/Jupyter_notebooks')
 hta_exprs <- read.csv("./Olsson_RSEM_SingleCellRNASeq.csv",row.names=1)
 sample_sheet <- data.frame(groups = str_split_fixed(colnames(hta_exprs), "\\.+", 3), row.names = colnames(hta_exprs))
 ## 在这里正则表达式将行名根据"."号进行分割，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
 head(sample_sheet)
-
-gene_ann <- data.frame(gene_short_name = row.names(hta_exprs), row.names = row.names(hta_exprs))
+gene_ann <- data.frame(gene_short_name = row.names(hta_exprs), row.names = row.names(hta_exprs)) # 在构建fd的时候必须要有gene_short_name这一列
 pd <- new("AnnotatedDataFrame",data=sample_sheet)
 fd <- new("AnnotatedDataFrame",data=gene_ann)
 
-tpm_mat <- hta_exprs
+tpm_mat <- hta_exprs # 讲读入的表达矩阵进行手工的TPM矫正，按照一列(一个样本/细胞)矫正，然后乘以1e6
 tpm_mat <- apply(tpm_mat, 2, function(x) x / sum(x) * 1e6)
 
+# 表达矩阵，样本注释和基因注释数据准备就绪，就可以构建CellDataSet(CDS)对象了，使用newCellDataSet函数
 URMM_all_std <- newCellDataSet(as.matrix(tpm_mat),phenoData = pd,featureData =fd,
                                expressionFamily = negbinomial.size(),
                                lowerDetectionLimit=1)
