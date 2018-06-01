@@ -511,6 +511,7 @@ HSMM_myo <- estimateDispersions(HSMM_myo)
 # 使用不同的策略会给出不同的fData(State)
 ## 策略1：  Ordering based on genes that differ between clusters
 ### find all genes that are differentially expressed in response to the switch from growth medium to differentiation medium:
+### 这是一种简单的处理方法，就是比较process最早和最晚的细胞的表达基因，作为这个基因集
 diff_test_res <- differentialGeneTest(HSMM_myo[expressed_genes,],     # 这一步比较费时
                                       fullModelFormulaStr="~Media")
 ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
@@ -769,13 +770,13 @@ get_correct_root_state <- function(cds){
   as.numeric(names(T0_counts)[which(T0_counts == max(T0_counts))])
 }
 
-suppressMessages(library(monocle))
+suppressMessages(library(monocle)) # suppress the warnings
 suppressMessages(library(stringr))
 suppressMessages(library(plyr))
 suppressMessages(library(netbiov))
 
 
-################################### 第一步，构建CDS对象 ###################################
+######################################## 第二步，构建CDS对象(full dataset) ########################################
 ## read the expression matrix in FPKM values (Monocle可以读入FPKM矫正后的数据)
 ## create a CDS
 ## convert the FPKM values to relative census counts (但是在进行下游分析的时候，一般会把FPKM转换成census counts)
@@ -787,6 +788,7 @@ setwd('/Users/mijiarui/Nature_Biotechnology_Paper/simpleSingleCell/monocle2-rge-
 hta_exprs <- read.csv("./Olsson_RSEM_SingleCellRNASeq.csv",row.names=1)
 sample_sheet <- data.frame(groups = str_split_fixed(colnames(hta_exprs), "\\.+", 3), row.names = colnames(hta_exprs))
 ## 在这里正则表达式将行名根据"."号进行分割，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
+str_split_fixed(colnames(hta_exprs), "\\.+", 3)
 head(sample_sheet)
 gene_ann <- data.frame(gene_short_name = row.names(hta_exprs), row.names = row.names(hta_exprs)) # 在构建fd的时候必须要有gene_short_name这一列
 pd <- new("AnnotatedDataFrame",data=sample_sheet)
@@ -800,42 +802,57 @@ URMM_all_std <- newCellDataSet(as.matrix(tpm_mat),phenoData = pd,featureData =fd
                                expressionFamily = negbinomial.size(),
                                lowerDetectionLimit=1)
 
-#set up the experimental type for each cell
+# set up the experimental type for each cell，建议在每部执行之前查看pData(URMM_all_std)所包含的内容，说白了，这边根据实验的设计
+# 追加了分组信息
+pData(URMM_all_std)
 pData(URMM_all_std)[, 'Type'] <- as.character(pData(URMM_all_std)[, 'groups.1']) #WT cells
+pData(URMM_all_std)
 pData(URMM_all_std)[453:593, 'Type'] <- paste(as.character(pData(URMM_all_std)[453:593, 'groups.1']), '_knockout', sep = '') #KO cells
+pData(URMM_all_std)
 pData(URMM_all_std)[594:640, 'Type'] <- paste(pData(URMM_all_std)[594:640, 'groups.1'], pData(URMM_all_std)[594:640, 'groups.2'], 'knockout', sep = '_') #double KO cells
 
-#run Census to get the transcript counts
-URMM_all_abs_list <- relative2abs(URMM_all_std, t_estimate = estimate_t(URMM_all_std), return_all = T, method = 'num_genes')
-URMM_all_abs <- newCellDataSet(as(URMM_all_abs_list$norm_cds, 'sparseMatrix'),
+# 将FPKM/TPM这些矫正表达量转换成绝对树脂RPC(mRNA per cell)是建议这么做的，采用的算法叫做census，建议将FPKM/TPM转换成RPC，这一步
+# 在构建CellDataSet之前完成
+# run Census to get the transcript counts；在得到FPKM/TPM矩阵后，使用relative2abs (Transform relative expression values into absolute transcript...)
+# if you have FPKM/TPM data, you can still use negative binomial if you first convert your relative expression values to 
+# transcript counts using relative2abs(). This often leads to much more accurate results than using tobit()
+URMM_all_abs_list <- relative2abs(URMM_all_std, t_estimate = estimate_t(URMM_all_std), return_all = T, method = 'num_genes') # convert to RPC
+URMM_all_abs <- newCellDataSet(as(URMM_all_abs_list$norm_cds, 'sparseMatrix'),               # 构建CDS, 表达矩阵是RPC
                                phenoData = new("AnnotatedDataFrame",data=pData(URMM_all_std)),
                                featureData = new("AnnotatedDataFrame",data=fData(URMM_all_std)),
                                expressionFamily = negbinomial.size(),
                                lowerDetectionLimit=1)
+
+## 在完成CellDataSet的构建之后，计算量化因子(size factor)和散度(dispersion)都非常必要，这样可以矫正样本测序深度之间的差别，并且
+## 对后续差异基因的筛选是有帮助的
 URMM_all_abs <- estimateSizeFactors(URMM_all_abs)
 suppressMessages(URMM_all_abs <- estimateDispersions(URMM_all_abs)) # suppress the warning produced from glm fit 
 
+# The setOrderingFilter function marks genes that will be used for clustering in subsequent calls to clusterCells
 URMM_all_abs <- setOrderingFilter(URMM_all_abs, row.names(fData(URMM_all_abs)))
+colnames(fData(URMM_all_abs)) # 在fData多出来一列，叫做use_for_ordering
+table(fData(URMM_all_abs)[,2]) # 当然，查看了一下这一列的内容，发现所有基因都用于ordering了。
 
 
 
-
-
-
-
+########################################## 第三步，构建CDS对象 (WT) ##########################################
 # Prepare the cds for the WT dataset
 # read the annotation data for cell clustering on the wild-type(WT) data
 
-  #########################################################################################################################################################################
-#read data from figure 1b, data collected from the Nature website 
+# read data from figure 1b, data collected from the Nature website 
 fig1b <- read.csv("./fig1b.txt",row.names=1, sep = '\t')
+dim(fig1b)
 
-#match up the column name in fig1b to the colnames in URMM_all_fig1b
-#note that you should not run this mutliple times
+# match up the column name in fig1b to the colnames in URMM_all_fig1b
+# note that you should not run this mutliple times
 URMM_all_fig1b <- URMM_all_abs[, pData(URMM_all_abs)$Type %in% c('Lsk', 'Cmp', 'Gmp', 'LK')]
 
 fig1b_names <- colnames(fig1b)
-match_id <- which(str_split_fixed(colnames(fig1b), "\\.+", 2)[, 2] %in% colnames(URMM_all_fig1b) == T)
+match_id <- which(str_split_fixed(colnames(fig1b), "\\.+", 2)[, 2] %in% colnames(URMM_all_fig1b) == T) # 理解这句代码需要将下面一行代码看懂
+## 相当于是正则表达式，使用"."为分隔符，然后从最左边的"."开始，将字段分割成2份，取第二份
+head(colnames(fig1b)); head(str_split_fixed(colnames(fig1b), "\\.+", 2)); head(str_split_fixed(colnames(fig1b), "\\.+", 2)[, 2])
+
+
 fig1b_names[match_id] <- str_split_fixed(colnames(fig1b), "\\.+", 2)[match_id, 2]
 no_match_id <- which(str_split_fixed(colnames(fig1b), "\\.+", 2)[, 2] %in% colnames(URMM_all_fig1b) == F)
 fig1b_names[no_match_id] <- str_split_fixed(colnames(fig1b), "\\.\\.", 2)[no_match_id, 2]
@@ -845,46 +862,75 @@ colnames(fig1b)[2:383] <- fig1b_names[2:383]
 cols <- c("Lsk" = "#edf8fb", "Cmp" = "#ccece6", "Gmp" = "#99d8c9", "GG1" = "#66c2a4", "IG2" = "#41ae76", "Irf8" = "#238b45", "LK" = "#005824",
           "Irf8_knockout" = "#fc8d59", "Gfi1_Irf8_knockout" = "#636363", "Gfi1_knockout" = "#dd1c77")
 
-#########################################################################################################################################################################
-#assign clusters to each cell based on the clustering in the original study
-pData(URMM_all_fig1b)$cluster <- 0
-cluster_assignments <- as.numeric(fig1b[1, 2:383])
+# assign clusters to each cell based on the clustering in the original study
+pData(URMM_all_fig1b)$cluster <- 0 # 给pData中添加cluster信息
+cluster_assignments <- as.numeric(fig1b[1, 2:383]) # 在fig2b矩阵中第一行的行名对应的时column_clusters-flat，相当于给每个细胞的分组信息
+cluster_assignments
+## 然后给每个cluster赋予其对应的cluster名称
 cluster_assignments <- revalue(as.factor(cluster_assignments), c("1" = "HSCP-1", "2" = "HSCP-2", "3" = "Meg", "4" = "Eryth",
                                                                  "5" = "Multi-Lin", "6" = "MDP", "7" = "Mono", "8" = "Gran", "9" = "Myelocyte"))
-
+cluster_assignments
 names(cluster_assignments) <- colnames(fig1b[1, 2:383])
+class(cluster_assignments); cluster_assignments # 这样得到一个cluster_assignment的向量，给向量赋予一个name方便取值
 pData(URMM_all_fig1b)$cluster <- cluster_assignments[row.names(pData(URMM_all_fig1b))]
-#########################################################################################################################################################################
+
 URMM_all_fig1b <- estimateSizeFactors(URMM_all_fig1b)
 suppressMessages(URMM_all_fig1b <- estimateDispersions(URMM_all_fig1b))
 
+########################################## 第四步，单细胞trajectory的理念的理解 ##########################################
+# 在发育过程中，细胞从一个功能状态转变为另一个功能状态。不同状态的细胞呈现出动态改变的蛋白表达和代谢谱，而这一切都是基于部分
+# 转录重整，即某一些基因的激活和某一些基因的沉默。Monocle introduced the strategy of using RNA-Seq for single cell trajectory 
+# analysis. Rather than purifying cells into discrete states experimentally, Monocle uses an algorithm to learn the sequence 
+# of gene expression changes each cell must go through as part of a dynamic biological process. Once it has learned the 
+# overall "trajectory" of gene expression changes, Monocle can place each cell at its proper position in the trajectory. 
+# You can then use Monocle's differential analysis toolkit to find genes regulated over the course of the trajectory
+# If there are multiple outcome for the process, Monocle will reconstruct a "branched" trajectory. These branches correspond 
+# to cellular "decisions", and Monocle provides powerful tools for identifying the genes affected by them and involved in 
+# making them. 
+# Monocle是基于一个称之为reversed graph embedding的机器学习算法来构建细胞的trajectory
 
+# 我们来理解一些pseudotime: 在很多生物学过程中，细胞的演化并不是呈现齐头并进的模式。尤其是在细胞分化的过程中，捕获得到的细胞
+# 广泛分布在不同的发育阶段，有的已经到了发育的终末期，有的在发育的前期或者刚开始。通过将这些细胞按顺序排列在经过学习的trajectory
+# 上面，monocle可以很好的解决从一个细胞状态向另一个细胞状态发生改变的过程中调控的顺序变化。Monocle并不是建立这种变化和时间的函数
+# 而是建立这种变化和progress of trajectory之间的函数，我们称之为pseudotime。Pseudotime的概念非常抽象，它是指一个细胞到trajectory的
+# 起点之间的距离，找到这样一个最短的距离。而这个trajectory的全长是细胞从起始状态到终末状态转录本变化的总差异。
 
-
-
-
-
-
-
+# Monocle的分析流程分为三大步：
+## Step 1: choosing genes that define progress 选择用于建立progress的基因集(发生表达上调或者下调的基因)
+##        在选择这个基因集的时候，尽量减少使用先验知识可以最大程度的减少偏倚，在这里monocle非常建议使用一种非监督的机器学习
+##        方法，称为dpFeature。To use dpFeature, we first select superset of feature genes as genes expressed in at least 5% of all the cells.
+## Step 2: reducing the dimensionality of the data 对数据进行降维处理
+## Step 3: ordering the cells in pseudotime 将细胞按照顺序排列在pseudotime上
 
 
 #1. set ordering genes for the fig1b
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = row.names(fig1b))
-URMM_pc_variance <- plot_pc_variance_explained(URMM_all_fig1b, return_all = T, norm_method = 'log')
+## By selecting only the high loading PCs, we effectively only focus on the more interesting biological variations.
+URMM_pc_variance <- plot_pc_variance_explained(URMM_all_fig1b, return_all = T, norm_method = 'log') # 碎石图，通过肉眼看哪些PC比较重要
+URMM_pc_variance  # 碎石图，通过肉眼看哪些PC比较重要，从而达到降维和去噪的作用。
 
 #2. run reduceDimension with tSNE as the reduction_method
+## We will then run reduceDimension with t-SNE as the reduction method on those top PCs and project them further down to two dimensions.
+## 在使用PCA去噪的基础之上，使用tSNE进一步降维，并投射到一个二维的空间当中
 set.seed(2017)
 URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, max_components=2, norm_method = 'log', reduction_method = 'tSNE', num_dim = 12,  verbose = F)
 
 #3. initial run of clusterCells
+## Then we can run density peak clustering to identify the clusters on the 2-D t-SNE space. The densityPeak algorithm 
+## clusters cells based on each cell's local density (Ρ) and the nearest distance (Δ) of a cell to another cell with higher 
+## distance. We can set a threshold for the Ρ, Δ and define any cell with a higher local density and distance than the 
+## thresholds as the density peaks. Those peaks are then used to define the clusters for all cells. By default, clusterCells 
+## choose 95% of Ρ and Δ to define the thresholds. We can also set a number of clusters (n) we want to cluster. In this 
+## setting, we will find the top n cells with high Δ with Δ among the top 50% range. The default setting often gives good 
+## clustering.
 URMM_all_fig1b <- clusterCells(URMM_all_fig1b, verbose = F, num_clusters = 5)
 
-#4. check the clusters
+#4. check the clusters，图形化展示聚类结果
 options(repr.plot.width=4, repr.plot.height=3)
 plot_cell_clusters(URMM_all_fig1b, color_by = 'as.factor(Cluster)') + theme (legend.position="left", legend.title=element_blank())# show_density = F,
 plot_cell_clusters(URMM_all_fig1b, color_by = 'cluster') + theme (legend.position="left", legend.title=element_blank())
 plot_cell_clusters(URMM_all_fig1b, color_by = 'Type') + theme (legend.position="left", legend.title=element_blank())
-plot_rho_delta(URMM_all_fig1b) 
+plot_rho_delta(URMM_all_fig1b) # We also provide the decision plot for users to check the Ρ, Δ for each cell and decide the threshold for defining the cell clusters.
 
 URMM_all_fig1b@expressionFamily <- negbinomial.size()
 pData(URMM_all_fig1b)$Cluster <- factor(pData(URMM_all_fig1b)$Cluster)
@@ -895,15 +941,10 @@ URMM_clustering_DEG_genes <- differentialGeneTest(URMM_all_fig1b, fullModelFormu
 URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)][1:1000]
 
 
-
-
-
-
-
-
-
+########################################## 第五步，在野生型细胞中重构发育的trajectory ##########################################
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = c(URMM_ordering_genes))
-URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, verbose = F, scaling = T, max_components = 4, maxIter = 100, norm_method = 'log',  lambda = 20 * ncol(URMM_all_fig1b)) 
+URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, verbose = F, scaling = T, max_components = 4, 
+                                  maxIter = 100, norm_method = 'log',  lambda = 20 * ncol(URMM_all_fig1b)) 
 URMM_all_fig1b <- orderCells(URMM_all_fig1b)
 options(repr.plot.width=3, repr.plot.height=3)
 plot_cell_trajectory(URMM_all_fig1b, color_by = 'Type')
@@ -913,12 +954,7 @@ options(repr.plot.width=8, repr.plot.height=8)
 plot_cell_trajectory(URMM_all_fig1b, color_by = 'cluster', x = 1, y = 3) + facet_wrap(~cluster)
 
 
-
-
-
-
-
-
+########################################## 第六步，在所有细胞中重构发育的trajectory ##########################################
 pData(URMM_all_abs)[colnames(URMM_all_fig1b), 'paper_cluster'] <- as.character(pData(URMM_all_fig1b)[, 'cluster'])
 
 URMM_all_abs <- setOrderingFilter(URMM_all_abs, ordering_genes = URMM_ordering_genes)
@@ -932,8 +968,9 @@ plot_cell_trajectory(URMM_all_abs, color_by = 'Type') + facet_wrap(~paper_cluste
 
 
 
-
-
+########################################## 第七步，在所有细胞和野生型细胞中展示树型图 ##########################################
+## Trajectories are reconstructed in 4 dimensions but can be visualized as a tree layout in two dimensions
+## both the WT and full dataset include the similar branch points
 
 
 
