@@ -191,12 +191,7 @@ VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga"), use.raw = TRUE, y
 
 
 FeaturePlot(object = pancreas_1, 
-            features.plot = c("ins", "gcga","gcgb", "sst2" ,'TMEM269','zgc:158463',"sox9b", 'cftr',
-                              'her15.1','notch1a','try','ela2l','yap1','taz',
-                              'ca2', 'nkx6.1', 'hnf1ba','gip', 'lats2','lats1', 'agrn','ptpn21','amotl2a',
-                              'fev','gck','prdx4','spcs1','mgst3b','mknk2b','foxo1a','sik2b','ythdf2','igf2bp2a', 'fto',
-                              'mettl3','mettl14','wtap','ythdf1', 'ythdf3','ythdc1', 'alkbh5',
-                              'jag1a','jag1b','crb3a','crb3b','anxa4'), 
+            features.plot = c('anxa4','IZUMO1R','yap1','lats2'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
@@ -755,11 +750,16 @@ lung_SCESet <- exportCDS(lung, 'Scater')
 HSMM <- estimateSizeFactors(HSMM)
 HSMM <- estimateDispersions(HSMM)
 
+
+
 #=============================================================================================
 #
 #         "Monocle2" package (Monocle 2.8.0)  Olsson Dataset Analysis
 #
 #=============================================================================================
+################################### 第一步，设定全局参数，加载包 ###################################
+## turn warnings off by executing 'options(warn = -1)'
+## execute helper function to identify the root cell
 rm(list = ls()) # clear the environment 
 options(warn=-1) # turn off warning message globally 
 
@@ -769,23 +769,25 @@ get_correct_root_state <- function(cds){
   as.numeric(names(T0_counts)[which(T0_counts == max(T0_counts))])
 }
 
-####################################################################################################################################################################################
-#load all package
-####################################################################################################################################################################################
 suppressMessages(library(monocle))
 suppressMessages(library(stringr))
 suppressMessages(library(plyr))
 suppressMessages(library(netbiov))
 
 
-
-
-
+################################### 第一步，构建CDS对象 ###################################
+## read the expression matrix in FPKM values (Monocle可以读入FPKM矫正后的数据)
+## create a CDS
+## convert the FPKM values to relative census counts (但是在进行下游分析的时候，一般会把FPKM转换成census counts)
+## create another CDS storing the relative census counts
 
 #reading the exprs data and create a cell dataset:
 setwd('/Users/mijiarui/Nature_Biotechnology_Paper/simpleSingleCell/monocle2-rge-paper/Supplementary_scripts/Jupyter_notebooks')
 hta_exprs <- read.csv("./Olsson_RSEM_SingleCellRNASeq.csv",row.names=1)
 sample_sheet <- data.frame(groups = str_split_fixed(colnames(hta_exprs), "\\.+", 3), row.names = colnames(hta_exprs))
+## 在这里正则表达式将行名根据"."号进行分割，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
+head(sample_sheet)
+
 gene_ann <- data.frame(gene_short_name = row.names(hta_exprs), row.names = row.names(hta_exprs))
 pd <- new("AnnotatedDataFrame",data=sample_sheet)
 fd <- new("AnnotatedDataFrame",data=gene_ann)
@@ -1108,6 +1110,20 @@ plot_multiple_branches_heatmap(URMM_all_fig1b[unique(c(positive_score_genes, neg
 load("./network_res")
 options(repr.plot.width=4, repr.plot.height=4)
 plot.netbiov(res) # create the hiearchical network
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #=============================================================================================
 #                          Using "Monocle2" to analyze data from "Seurat"
