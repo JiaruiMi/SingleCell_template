@@ -95,26 +95,42 @@ pancreas_1 <- FilterCells(object = pancreas_1, subset.names = c("nGene", "percen
 # a global-scaling normalization method LogNormalize that normalizes the gene expression measurements for each cell by the total 
 # expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result”
 # 其意思是，先针对测序文库的大小进行normalization，然后乘以一个scaling factor(非常类似于CPM，不过默认值是10000), 然后在对这个数值进行log转换
+# 注意，这种类似于CPM的数据校正方法，并没有对基因的长度进行校正
 pancreas_1@raw.data[,1]
 summary(pancreas_1@raw.data[,1])
-pancreas_1 <- NormalizeData(object = pancreas_1, normalization.method = "LogNormalize", 
+pancreas_1 <- NormalizeData(object = pancreas_1, normalization.method = "LogNormalize",  # 执行完这个函数，会在pancreas_1这个对象中增加归一化后的信息
                             scale.factor = 10000)
-
+str(pancreas_1)  # 增加了NormalizedData
 summary(pancreas_1@data[,1]) # 比较一下normalize前后的数据分布
 
 
-################### Detection of variable genes across the single cells ###################
-par(mfrow = c(1, 1))
-pancreas_1 <- FindVariableGenes(object = pancreas_1, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+############################# Detection of variable genes across the single cells ###########################
+par(mfrow = c(1, 1)) 
+## 寻找HVG，我们认为表达量在一定程度以上，同时样本(细胞)之间有一定差异的基因，是可以用于后续分析(cluster, cell type identification)的
+## 其余的基因，会成为噪声，需要滤除
+length(x = pancreas_1@var.genes)
+pancreas_1 <- FindVariableGenes(object = pancreas_1, mean.function = ExpMean,   # 这一步稍微有点费时，尤其是出图加text
+                                dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+## 同样，执行完上述函数，会在对象中增加var.genes这个对象
 length(x = pancreas_1@var.genes)
 
 
-################### Scaling the data and removing unwanted sources of variation ###################
+############################# Scaling the data and removing unwanted sources of variation #########################
 # "需要去除那些technical noise,batch effects, or even biological sources of variation (cell cycle stage)"
-pancreas_1 <- ScaleData(object = pancreas_1, vars.to.regress = c("nUMI", "percent.mito"))
+# To mitigate the effect of confounding factors, Seurat constructs linear models to predict gene expression based on user-defined 
+# variables. The scaled z-scored residuals of these models are stored in the scale.data slot, and are used for dimensionality 
+# reduction and clustering. Seurat can regress out cell-cell variation in gene expression driven by batch, cell alignment rate 
+# (as provided by Drop-seq tools for Drop-seq data), the number of detected molecules, mitochondrial gene expression and cell cycle. 
+# Here we regress on the number of detected molecules per cell/percentage of mitochondria genes.
+## 校正混杂因素(可以认为设定，比如batch)，同时对数据进行scale(数值减去平均值，然后除以对应的标准差，得到z-score)
+str(pancreas_1)
+pancreas_1 <- ScaleData(object = pancreas_1, vars.to.regress = c("nUMI", "percent.mito")) # 这一步比较费时(好几分钟，第一步regression，第二步scale data matrix)
+str(pancreas_1) # scale.data从Null变成了校正后的结果
 summary(pancreas_1@scale.data[,1])
 
-################### PCA分析(Principal component analysis) ###################
+############################## 线性降维Linear dimensionality reduction ##############################
+## 现在降维和可视化一般都是两步法（其实是三步法），第一步是上面select HVG，第二步PCA，将高维数据降成十几维，滤除差异贡献度很小的维度
+## 以进一步去噪声，然后使用tSNE
 pancreas_1 <- RunPCA(object = pancreas_1, pc.genes = pancreas_1@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5)
 
 
