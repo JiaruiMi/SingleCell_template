@@ -13,6 +13,8 @@
 # 差异基因分析、亚群特异性标志物鉴定等等等。给初学者提供了一个2,700 PBMC scRNA-seq dataset from 10X genomics的数据实战指导；这里的测试
 # 数据是经由Illumina NextSeq 500测到的2,700 single cells 表达矩阵。
 
+############################################### 载入数据 ###############################################
+
 ### Load packages，加载数据前需要将文件夹中的三个文件分别命名为“matrix.mtx", "barcodes.tsv", "genes.tsv"
 ### 注意，许多scRNA-seq的pipeline返回的已经是一个稀疏矩阵了(sparse matrix)，比如CellRanger返回的mtx格式文件
 library(Seurat) # the seurat version now I am using is 2.3.1
@@ -27,58 +29,78 @@ setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5'
 list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5") # 通过这个函数查看读入文件夹内包含的文件
 ### 这三个文件，必须按照上述命名要求命名，后面Read10X()会自动识别。
 
-### # Load the Pancreas_1_mRNA_GSM2830058_P5 dataset
+### Load the Pancreas_1_mRNA_GSM2830058_P5 dataset
 pancreas_1.data <- Read10X(data.dir = "/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5")
+### 载入数据后一定注意查看下object!
+pancreas_1.data # 注意这一步仅仅是载入数据，还没有构建Seurat对象; 上面一步相当于就是把表达矩阵读进来了，metadata还没用整合进来
+str(pancreas_1.data) # 对于复杂的组学数据，使用str()函数可以更清楚的了解数据的组成，并且方便后续数据操作
+pancreas_1.data@Dim
+length(pancreas_1.data@Dimnames[[1]]) # 每一个gene都是用gene_symbol来表示的，Dimnames下的第一个对象是基因名
+length(pancreas_1.data@Dimnames[[2]]) # 每一个细胞，我们用对应的barcode来表示，Dimnames下的第二个对象是cell barcode
 
 ### Examine the memory savings between regular and sparse matrices
-### 这一步是分别查看密集矩阵和稀疏矩阵所占用的空间，大致可以判断矩阵当中0的数量
+### 这一步是可选项，分别查看密集矩阵和稀疏矩阵所占用的空间，大致可以判断矩阵当中0的数量，使用object.size()函数
 dense.size <- object.size(x = as.matrix(x = pancreas_1.data))
-dense.size
+dense.size # 密集矩阵所占用的空间
 
 sparse.size <- object.size(x = pancreas_1.data)
-sparse.size
+sparse.size # 稀疏矩阵所占用的空间
 
-dense.size / sparse.size
+dense.size / sparse.size # 稀疏矩阵比密集矩阵压缩了近20倍的空间(在这个数据集中)
 
+############################################### 构建Seurat对象 ###############################################
 # Initialize the Seurat object with the raw (non-normalized data).  Keep all genes expressed in >= 3 cells (~0.1% of the data). 
 # Keep all cells with at least 200 detected genes
 # 注意Seurat设定了自己的object，就叫做Seurat object
-
 pancreas_1 <- CreateSeuratObject(raw.data = pancreas_1.data, min.cells = 3, min.genes = 200, 
                                  project = "10X_Pancreas_1")
-pancreas_1
+pancreas_1 # 构建对象后常规查看一下对象的内容，还是强烈建议用str()函数来查看
+str(pancreas_1)  # pancreas_1@raw.data就相当于Read10X读入的pancreas_1.data
+rownames(pancreas_1@raw.data); rownames(pancreas_1@data) # 这两句代码都可以用来查看gene_symbol
 
 ###################################### Quality control ###############################################
-mito.genes <- grep(pattern = "^MT-", x = rownames(x = pancreas_1@data), value = TRUE)
-percent.mito <- Matrix::colSums(pancreas_1@raw.data[mito.genes, ]) / Matrix::colSums(pancreas_1@raw.data)
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = pancreas_1@data), value = TRUE) # 挑取MT-开头的gene_symbol，是线粒体基因，可以用于归一化
+## 当然在这个数据集中，mito.genes为空
+percent.mito <- Matrix::colSums(pancreas_1@raw.data[mito.genes, ]) / Matrix::colSums(pancreas_1@raw.data) # 计算每一个样本中线粒体基因在所有counts中的比例
+percent.mito; table(percent.mito) # 在这个数据集中，因为线粒体基因为空，所以所有的比例都为0
 
-
-# AddMetaData: adds columns to object@meta.data, and is a great place to stash QC stats
+# AddMetaData: adds columns to object@meta.data, and is a great place to stash QC stats。可以将计算得到的percent.mito追加到Seurat对象的metadata里面
+str(pancreas_1)
 pancreas_1 <- AddMetaData(object = pancreas_1, metadata = percent.mito, col.name = "percent.mito")
+str(pancreas_1) # 比较前后的差别，发现pancreas_1对象下的meta.data增加了percent.mito这个元素，其中nGene, nUMI和percent.mito都是向量
+class(pancreas_1@meta.data$nGene); class(pancreas_1@meta.data$nUMI);class(pancreas_1@meta.data$percent.mito)
+pancreas_1@meta.data # 本质是一个矩阵
 VlnPlot(object = pancreas_1, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+## 我们查看一下平均的nGene, nUMI, percent.mito和中位数nGene, nUMI, percent.mito
+apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, mean); apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, median)
 
 # GenePlot is typically used to visualize gene-gene relationships, but can be used for anything calculated by the object,
-# i.e. columns in object@meta.data, PC scores etc.  Since there is a rare subset of cells with an outlier level of high 
+# i.e. columns in object@meta.data, PC scores etc.  For the PBMC dataset (not this one),since there is a rare subset of cells with an outlier level of high 
 # mitochondrial percentage and also low UMI content, we filter these as well
 par(mfrow = c(1, 2))
-GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "percent.mito") # GenePlot是专门用来画散点图的
 GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "nGene")
 
 
 # We filter out cells that have unique gene counts over 2,500 or less than 200 Note that low.thresholds and high.thresholds are 
 # used to define a 'gate'.  -Inf and Inf should be used if you don't want a lower or upper
 # threshold. "可以看到这里选择的QC标准是 200~2500基因范围内，以及线粒体基因表达占比小于5%的才保留。"
-pancreas_1 <- FilterCells(object = pancreas_1, subset.names = c("nGene", "percent.mito"), 
-                          low.thresholds = c(200, -Inf), high.thresholds = c(Inf, 0.05))
+pancreas_1 <- FilterCells(object = pancreas_1, subset.names = c("nGene", "percent.mito"),    # 使用FilterCells()函数来过滤细胞
+                          low.thresholds = c(200, -Inf), high.thresholds = c(Inf, 0.05))     # 实际上针对这个数据集，我仅仅使用nGene，过滤低于200个gene的细胞
 
 
 ###################################### Normalization ###############################################
-# "这里默认根据细胞测序文库大小进行normalization，简单的做一个log转换即可。"
+# "这里默认根据细胞测序文库大小进行normalization，简单的做一个log转换即可。" 我们来解读下这句话的含义：
+# 出自hemberg的注解：“After removing unwanted cells from the dataset, the next step is to normalize the data. By default, we employ 
+# a global-scaling normalization method LogNormalize that normalizes the gene expression measurements for each cell by the total 
+# expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result”
+# 其意思是，先针对测序文库的大小进行normalization，然后乘以一个scaling factor(非常类似于CPM，不过默认值是10000), 然后在对这个数值进行log转换
+pancreas_1@raw.data[,1]
 summary(pancreas_1@raw.data[,1])
 pancreas_1 <- NormalizeData(object = pancreas_1, normalization.method = "LogNormalize", 
                             scale.factor = 10000)
 
-summary(pancreas_1@data[,1])
+summary(pancreas_1@data[,1]) # 比较一下normalize前后的数据分布
 
 
 ################### Detection of variable genes across the single cells ###################
