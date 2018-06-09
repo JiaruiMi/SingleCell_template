@@ -25,6 +25,7 @@ list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM283005
 pancreas_1.data <- Read10X(data.dir = "/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5")
 
 ### Examine the memory savings between regular and sparse matrices
+### 这一步是分别查看密集矩阵和稀疏矩阵所占用的空间，大致可以判断矩阵当中0的数量
 dense.size <- object.size(x = as.matrix(x = pancreas_1.data))
 dense.size
 
@@ -142,7 +143,7 @@ pancreas_1 <- RunTSNE(object = pancreas_1, dims.use = 1:15, do.fast = TRUE)
 TSNEPlot(object = pancreas_1, do.label=T)
 ?TSNEPlot
 save(pancreas_1, file = "pancreas_1.rData")
-pancreas_1.markers %>% group_by(cluster)
+
 
 
 ################### Finding differentially expressed genes (cluster biomarkers) ###################
@@ -159,7 +160,7 @@ cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 1, min.pct = 0.25
 print(x = head(x = cluster1.markers, n = 5))
 
 # find markers of each cluster
-for (i in 0:11) {
+for (i in 0:15) {
   cluster.markers <- FindMarkers(object = pancreas_1, ident.1 = i, min.pct = 0.25)
   print(paste("marker of cluster: ",i ))
   print(x = head(x = cluster.markers, n = 50))
@@ -187,11 +188,11 @@ cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0
 VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2'))
 
 # you can plot raw UMI counts as well
-VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga"), use.raw = TRUE, y.log = TRUE)
+VlnPlot(object = pancreas_1, features.plot = c('nf2a','nf2b','mitfb','cdc42'), use.raw = TRUE, y.log = TRUE)
 
 
 FeaturePlot(object = pancreas_1, 
-            features.plot = c('anxa4','IZUMO1R','yap1','lats2'), 
+            features.plot = c('nf2a','nf2b','mitfb','cdc42'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
@@ -811,7 +812,7 @@ pData(URMM_all_std)[453:593, 'Type'] <- paste(as.character(pData(URMM_all_std)[4
 pData(URMM_all_std)
 pData(URMM_all_std)[594:640, 'Type'] <- paste(pData(URMM_all_std)[594:640, 'groups.1'], pData(URMM_all_std)[594:640, 'groups.2'], 'knockout', sep = '_') #double KO cells
 
-# 将FPKM/TPM这些矫正表达量转换成绝对树脂RPC(mRNA per cell)是建议这么做的，采用的算法叫做census，建议将FPKM/TPM转换成RPC，这一步
+# 将FPKM/TPM这些矫正表达量转换成绝对数值RPC(mRNA per cell)是建议这么做的，采用的算法叫做census，建议将FPKM/TPM转换成RPC，这一步
 # 在构建CellDataSet之前完成
 # run Census to get the transcript counts；在得到FPKM/TPM矩阵后，使用relative2abs (Transform relative expression values into absolute transcript...)
 # if you have FPKM/TPM data, you can still use negative binomial if you first convert your relative expression values to 
