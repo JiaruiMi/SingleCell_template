@@ -130,32 +130,41 @@ summary(pancreas_1@scale.data[,1])
 
 ############################## 线性降维Linear dimensionality reduction ##############################
 ## 现在降维和可视化一般都是两步法（其实是三步法），第一步是上面select HVG，第二步PCA，将高维数据降成十几维，滤除差异贡献度很小的维度
-## 以进一步去噪声，然后使用tSNE
-pancreas_1 <- RunPCA(object = pancreas_1, pc.genes = pancreas_1@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5)
-
+## 以进一步去噪声，然后使用tSNE; 在进行PCA分析的时候，一般都是挑选HVG，同时需要进行centering和scaling两步的，比较好的是上面的ScaleData
+## 已经帮我们计算得到了这部分var.genes。具体原理可以见StatQuest对PCA的更新版视频（2018-04）
+pancreas_1 <- RunPCA(object = pancreas_1, pc.genes = pancreas_1@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5) # 增加了RunPCA这个对象
+### 每个PC实际给出了10个gene，应该是PC正负向贡献度最大的各5个gene(判断)
 
 ## 对PCA分析结果可以进行一系列的可视化： PrintPCA, VizPCA, PCAPlot, and PCHeatmap
 par(mar = c(5,5,3,2))
-VizPCA(object = pancreas_1, pcs.use = 1:2)
+VizPCA(object = pancreas_1, pcs.use = 1:2) # 通过VizPCA，也可以确认上述的判断
 PCAPlot(object = pancreas_1, dim.1 = 1, dim.2 = 2)
 
 # ProjectPCA scores each gene in the dataset (including genes not included in the PCA) based on their correlation 
 # with the calculated components. Though we don't use this further here, it can be used to identify markers that 
 # are strongly correlated with cellular heterogeneity, but may not have passed through variable gene selection. 
 # The results of the projected PCA can be explored by setting use.full=T in the functions above
-pancreas_1 <- ProjectPCA(object = pancreas_1, do.print = FALSE)
+pancreas_1 <- ProjectPCA(object = pancreas_1, do.print = T)
 
 ## 最重要的就是 PCHeatmap 函数了
 PCHeatmap(object = pancreas_1, pc.use = 1, cells.use = 500, do.balanced = TRUE, label.columns = FALSE)
-PCHeatmap(object = pancreas_1, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE, use.full = FALSE)
+PCHeatmap(object = pancreas_1, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE, use.full = F)
 
-######################### 找到有统计学显著性的主成分 #########################
-# 主成分分析结束后需要确定哪些主成分所代表的基因可以进入下游分析，这里可以使用JackStraw做重抽样分析。
+################################### 找到有统计学显著性的主成分 #####################################
+# 主成分分析结束后需要确定哪些主成分所代表的基因可以进入下游分析，这里可以使用JackStraw做重抽样分析(默认每次重抽样1%的数据)。
+# Seurat randomly permutes a subset of the data (1% by default) and reruns PCA, constructing a null distribution of gene scores by 
+# repeating this procedure. We identify significant PCs as those who have a strong enrichment of low p-value genes:
 # 可以用JackStrawPlot可视化看看哪些主成分可以进行下游分析。这一步很耗时
 pancreas_1 <- JackStraw(object = pancreas_1, num.replicate = 100) 
-JackStrawPlot(object = pancreas_1, PCs = 1:12)
+JackStrawPlot(object = pancreas_1, PCs = 1:12) # 挑选黑色实线在虚线上方的部分
+## The JackStrawPlot function provides a visualization tool for comparing the distribution of p-values for each PC with a uniform 
+## distribution (dashed line). Significant PCs will show a strong enrichment of genes with low p-values (solid curve above the dashed 
+## line). In this case it appears that PCs 1-8 are significant.
 
-# 当然，也可以用最经典的碎石图来确定主成分。这一步很耗时。
+
+# 当然，也可以用最经典的碎石图来确定主成分。这一步很耗时。A more ad hoc method for determining which PCs to use is to look at 
+# a plot of the standard deviations of the principle components and draw your cutoff where there is a clear elbow in the graph. 
+# This can be done with PCElbowPlot.
 PCElbowPlot(object = pancreas_1)
 
 
@@ -164,33 +173,36 @@ PCElbowPlot(object = pancreas_1)
 # but is time-consuming for large datasets, and may not return a clear PC cutoff. The third is a heuristic that 
 # is commonly used, and can be calculated instantly.
 
-###################################### Cluster the cells ######################################
+############################################### Cluster the cells #################################################
 # save.SNN = T saves the SNN so that the clustering algorithm can be rerun using the same graph
 # but with a different resolution value (see docs for full details)
+str(pancreas_1)
 pancreas_1 <- FindClusters(object = pancreas_1, reduction.type = "pca", dims.use = 1:15, resolution = 0.6, print.output = 0, save.SNN = TRUE)
-
-
+str(pancreas_1) # 增加了FindClusters这个元素
+pancreas_1@ident # The clusters are saved in the object@ident slot(向量).具体来看每一个细胞被分到哪一个cluster
+table(pancreas_1@ident) # 统计每个cluster有多少个细胞
 
 # A useful feature in Seurat v2.0 is the ability to recall the parameters that were used in the latest function calls 
 # for commonly used functions. For FindClusters, we provide the function PrintFindClustersParams to print a nicely 
 # formatted formatted summary of the parameters that were chosen.
 PrintFindClustersParams(object = pancreas_1)
-# While we do provide function-specific printing functions, the more general function to 
-# print calculation parameters is PrintCalcParams(). 
+## While we do provide function-specific printing functions, the more general function to 
+## print calculation parameters is PrintCalcParams(). 我们以RunPCA为例子
+PrintCalcParams(object = pancreas_1, calculation = 'RunPCA')
 
 
-################### Run Non-linear dimensional reduction (tSNE) ###################
+####################################### Run Non-linear dimensional reduction (tSNE) ##################################
 # 同样也是一个函数，这个结果也可以像PCA分析一下挑选合适的PC进行下游分析。
 # 这一步很耗时，可以保存该对象，便于重复，以及分享交流 （出图时间很长)
+# 我们在进行tSNE计算的时候，倾向使用pc，这样噪声比较小；当然，在函数中也可以使用genes.use这个参数来使用z-scaled的gene表达来计算
 pancreas_1 <- RunTSNE(object = pancreas_1, dims.use = 1:15, do.fast = TRUE)
 # note that you can set do.label=T to help label individual clusters 
 TSNEPlot(object = pancreas_1, do.label=T)
-?TSNEPlot
 save(pancreas_1, file = "pancreas_1.rData")
 
 
 
-################### Finding differentially expressed genes (cluster biomarkers) ###################
+############################### Finding differentially expressed genes (cluster biomarkers) ###########################
 # 差异分析在seurat包里面被封装成了函数：FindMarkers，有一系列参数可以选择，然后又4种找差异基因的算法：
 
 # 方法一： ROC test (“roc”)
@@ -221,6 +233,7 @@ pancreas_1.markers %>% group_by(cluster) %>% top_n(2, avg_logFC)
 pancreas_1.markers $cluster
 
 # 值得注意的是： The ROC test returns the ‘classification power’ for any individual marker (ranging from 0 - random, to 1 - perfect).
+# 所以可以用来衡量找到的marker是否可靠
 cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "roc", only.pos = TRUE)
 
 # 同时，该包提供了一系列可视化方法来检查差异分析的结果的可靠性：
@@ -231,10 +244,14 @@ cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0
 
 VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2'))
 
-# you can plot raw UMI counts as well
+# you can plot raw UMI counts as well，使用use.raw = T来指定
 VlnPlot(object = pancreas_1, features.plot = c('nf2a','nf2b','mitfb','cdc42'), use.raw = TRUE, y.log = TRUE)
 
-
+# In tSNE plot
+FeaturePlot(object = pancreas_1, 
+            features.plot = c('nf2a','nf2b','mitfb','cdc42'), 
+            cols.use = c("grey", "Red"), reduction.use = "tsne")
+# In PCA plot
 FeaturePlot(object = pancreas_1, 
             features.plot = c('nf2a','nf2b','mitfb','cdc42'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
@@ -246,9 +263,11 @@ pancreas_1.markers %>% group_by(cluster) %>% top_n(10, avg_logFC) -> top10
 DoHeatmap(object = pancreas_1, genes.use = top10$gene, slim.col.label = TRUE, remove.key = TRUE)
 
 
+###################################### Assigning cell type identity to clusters ####################################
+# https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
 
-
-
+###################################### Further subdivisions within cell types ######################################
+# https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
 
 
 #=============================================================================================
