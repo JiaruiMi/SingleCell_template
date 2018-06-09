@@ -7,7 +7,11 @@
 #=============================================================================================
 #                                      "Seurat" package
 #=============================================================================================
-
+# 牛津大学的Rahul Satija等开发的Seurat，最早公布在Nature biotechnology, 2015，文章是； Spatial reconstruction of single-cell 
+# gene expression data , 在2017年进行了非常大的改动，所以重新在biorxiv发表了文章在 Integrated analysis of single cell transcriptomic 
+# data across conditions, technologies, and species 。 功能涵盖了scRNA-seq的QC、过滤、标准化、批次效应、PCA、tNSE亚群聚类分析、
+# 差异基因分析、亚群特异性标志物鉴定等等等。给初学者提供了一个2,700 PBMC scRNA-seq dataset from 10X genomics的数据实战指导；这里的测试
+# 数据是经由Illumina NextSeq 500测到的2,700 single cells 表达矩阵。
 
 ### Load packages，加载数据前需要将文件夹中的三个文件分别命名为“matrix.mtx", "barcodes.tsv", "genes.tsv"
 ### 注意，许多scRNA-seq的pipeline返回的已经是一个稀疏矩阵了(sparse matrix)，比如CellRanger返回的mtx格式文件
@@ -19,7 +23,9 @@ library(Matrix)
 
 ### set working directory
 setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5')
-list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5")
+### 根据表达矩阵构建seurat对象：加载数据前需要将文件夹中的三个文件分别命名为“matrix.mtx", "barcodes.tsv", "genes.tsv"，需要准备好3个输入文件
+list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5") # 通过这个函数查看读入文件夹内包含的文件
+### 这三个文件，必须按照上述命名要求命名，后面Read10X()会自动识别。
 
 ### # Load the Pancreas_1_mRNA_GSM2830058_P5 dataset
 pancreas_1.data <- Read10X(data.dir = "/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5")
