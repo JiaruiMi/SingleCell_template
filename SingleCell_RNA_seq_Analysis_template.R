@@ -3,7 +3,10 @@
 #            single-cell RNA-seq analysis using different packages (methods)
 #
 #=============================================================================================
-
+# 现在R里处理single-cell RNA sequencing的packages主要分成两派：SingleCellExperiment派和Seurat派。
+# SingleCellExperiment派使用SingleCellExperiment R包里定义的S4 object，主打分析包有s cater (scater，数据QC和初步visualisation)，SC3（SC3，聚类分析）……（待补充）
+# Seurat派使用Seurat包里定义的S4 object储存数据，主打分析包有Seurat（Seurat，聚类分析等全套内容），monocle（Monocle，pseudotime analysis等）……（待补充）
+# 有一个R package可以将Seurat S4 object和SingleCellExperiment S4 object相互转换（这个名字现在想不起来了，在推特上看过，待查证）。
 #=============================================================================================
 #                                      "Seurat" package
 #=============================================================================================
@@ -1575,11 +1578,12 @@ plotRLE(
 
 
 
-
-
-
-## 如果没有这个rds对象，就自己把read counts的表达矩阵读进去，变成这个适用于scater包的SCESet对象，代码如下；
+## 我在这边使用University of Chicago的Tung数据集来进行演示，使用的是Fluidigm C1的平台，利用UMI和ERCC spike-in分别进行定量和数据归一化
+## 如果没有这个rds对象，就自己把read counts的表达矩阵读进去，变成这个适用于scater包的SingleCellExperiment对象，代码如下；
 ## Load the data and annotations:
+options(stringsAsFactors = FALSE)
+set.seed(1234567)
+setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Testing_dataset')
 molecules <- read.table("molecules.txt", sep = "\t")   # 这个文件是表达矩阵，包括线粒体基因和 ERCC spike-ins 的表达量，可以用来做质控
 dim(molecules); head(molecules[ , 1:3])
 table(grepl(pattern = '^ERCC', rownames(molecules))) # 查看下ERCC有多少个，在这个矩阵中线粒体基因也是以“ENSG”开头的，后面会指明
@@ -1594,29 +1598,37 @@ umi <- SingleCellExperiment(
   assays = list(counts = as.matrix(molecules)), # 构建SingleCellExperiment对象的时候，表达矩阵可以有好几个slot，所以我们要用list，指明传入的是哪个slot
   colData = anno
 )
+# 构建好了SingleCellExperiment对象后一定记得看一眼
+umi
 
 # Remove genes that are not expressed in any cell:
 keep_feature <- rowSums(counts(umi) > 0) > 0
 umi <- umi[keep_feature, ]
-dim(umi)
+dim(umi) # 经过这一步过滤，我们把在所有细胞中都不表达的gene给filter掉了
 
 # Define control features (genes) - ERCC spike-ins and mitochondrial genes (provided by the authors):
 isSpike(umi, "ERCC") <- grepl("^ERCC-", rownames(umi))
+umi # 在spikeNames里面增加了ERCC一项
 isSpike(umi, "MT") <- rownames(umi) %in% 
   c("ENSG00000198899", "ENSG00000198727", "ENSG00000198888",
     "ENSG00000198886", "ENSG00000212907", "ENSG00000198786",
     "ENSG00000198695", "ENSG00000198712", "ENSG00000198804",
     "ENSG00000198763", "ENSG00000228253", "ENSG00000198938",
     "ENSG00000198840")
+umi # 在spikeNames里面又增加了MT一项
 
 # Calculate the quality metrics:
-umi <- calculateQCMetrics(
+colData(umi)
+rowData(umi)
+umi <- calculateQCMetrics(   # 这一步会在colData和rowData增加很多统计信息，这些信息对后续细胞的过滤非常重要
   umi,
   feature_controls = list(
     ERCC = isSpike(umi, "ERCC"), 
     MT = isSpike(umi, "MT")
   )
 )
+colData(umi)
+rowData(umi)
 
 ########################################### Cell QC ###########################################
 # Library size
@@ -1670,14 +1682,12 @@ plotColData(
   y = "pct_counts_ERCC",
   colour_by =  "batch"
 )
-
+## The above analysis shows that majority of the cells from NA19098.r2 batch have a very high ERCC/Endo ratio. Indeed, 
+## it has been shown by the authors that this batch contains cells of smaller size.
 filter_by_ERCC <- umi$batch != "NA19098.r2"
 table(filter_by_ERCC)
 filter_by_MT <- umi$pct_counts_MT < 10
 table(filter_by_MT)
-
-## The above analysis shows that majority of the cells from NA19098.r2 batch have a very high ERCC/Endo ratio. 
-## Indeed, it has been shown by the authors that this batch contains cells of smaller size.
 
 
 ########################################### Cell filtering ###########################################
@@ -1693,7 +1703,7 @@ umi$use <- (
     # remove cells with unusual number of reads in MT genes
     filter_by_MT
 )
-table(umi$use)
+table(umi$use)  # 经过多步的探索（feature，counts，ERCC percentage，MT percentage）我们过滤掉一部分低质量的细胞
 
 ## Automatic cell filtering
 # Another option available in scater is to conduct PCA on a set of QC metrics and then use automatic outlier 
@@ -1709,13 +1719,16 @@ table(umi$use)
 # scater first creates a matrix where the rows represent cells and the columns represent the different QC 
 # metrics. Here, the PCA plot provides a 2D representation of cells ordered by their quality metrics. 
 # The outliers are then detected using methods from the mvoutlier package.
-assay(umi, "logcounts") <- log2(counts(umi) + 1)
+
+### automated 这边是有问题的，待定。。。
+assay(umi, "logcounts") <- log2(counts(umi) + 1)  # 追加slot
 umi <- plotPCA(
   umi,
   size_by = "total_features", 
   shape_by = "use",
-  run_args = list(pca_data_input = "pdata", exprs_values = 'counts', detect_outliers = TRUE),
+  run_args = list(pca_data_input = "coldata", exprs_values = 'counts', detect_outliers = TRUE),
 )
+?plotPCA
 table(umi$outlier)
 table(colData(umi))
 search()
@@ -2334,7 +2347,15 @@ plotPCA(pollen, colour_by = "cell_type1")
 
 
 ###################################################  SC3聚类  ################################################### 
-## SC3聚类的原理: 
+## Vladimir Yu Kiselev 发明单细胞共识聚类SC3(single-cell consensus clustering)
+## SC3聚类的原理:  single cell RNA-seq 分析中常用无监督的聚类来坚定细胞类型，各种聚类都需要调试很多参数，这篇文章利用了consensus matrix
+## 这个矩阵进行二次分类，即多次不同参数的聚类两个细胞都被聚在同一个类中的频率，而使用不同参数的这个过程可以并行化。
+## 首先创建基于相关分析（Spearman correlation）的距离矩阵，然后计算拉普拉斯算子的特征向量。接着在最初的d特征向量（d取不同的值，
+## 从细胞总数的4%到7%）多次运用k-means算法。平均不同次运行的结果得到一个一致性矩阵（consensus matrix），从中可以看出两个细胞在
+## 不同次运行中聚到一起的频率是多少。最后在一致性矩阵执行完整的层次聚类（hierarchical clustering with complete agglomeration），
+## 得到k群（k clusters）。用于k-means和层次聚类的SC3的参数k，从2迭代到10。每一次运行SC3，都要计算剪影（silhouette），绘制一致性
+## 矩阵，鉴定集群特异基因（cluster specific genes）。所有这三个方面可以帮助研究者根据经验得到最优的k和n。一旦确定出稳定的集群，
+## 使用的程序将被迭代到每一个集群，用以揭示每个集群中细胞间的高变异基因，然后就可以使用这些变异基因来识别亚群。
 
 ## 准备SingleCellExperiment对象 数据给 SC3方法，先预测能聚多少个类。
 pollen <- sc3_estimate_k(pollen) # 增加了metadata: sc3这个元素
