@@ -1305,25 +1305,26 @@ ggplot(as.data.frame(pData(pancreas.1)),
 
 
 
-#=============================================================================================
-#                          比较不同的对单细胞转录组数据normalization方法
-#=============================================================================================
+#========================================================================================================
+#                比较不同的对单细胞转录组数据normalization方法, 特指测序文库的归一化 (生信技能树)
+#========================================================================================================
 # 使用CPM去除文库大小影响
 # 之所以需要normalization，就是因为测序的各个细胞样品的总量不一样，所以测序数据量不一样，就是文库大小不同，
-# 这个因素是肯定需要去除。最简单的就是counts per million (CPM)，所有样本的所有基因的表达量都乘以各自的文库
-# reads总数再除以一百万即可。(一般miRNA-seq数据结果喜欢用这个) 代码如下：
+# 这个因素是肯定需要去除。最简单的就是counts per million (CPM)，所有样本的所有基因的表达量都除以各自的文库
+# reads总数再乘以一百万即可。那些包装好的函数，比如在Seurat中，也是用的类似的方法，归一化，再用另一个函数去除混杂因素
+# (一般miRNA-seq数据结果喜欢用这个) 代码如下：
 
-calc_cpm <-
-  function (expr_mat, spikes = NULL) 
-  {
-    norm_factor <- colSums(expr_mat[-spikes, ])
-    return(t(t(expr_mat)/norm_factor)) * 10^6
-  }
+## calc_cpm <-
+##  function (expr_mat, spikes = NULL) 
+##  {
+##    norm_factor <- colSums(expr_mat[-spikes, ])
+##    return(t(t(expr_mat)/norm_factor)) * 10^6
+##  }
 # 但是CPM方法有一个很严重的缺陷，那些高表达并且在细胞群体表达差异很大的基因会严重影响那些低表达基因。
 
+# 对于同时校正基因/转录本长度的的方法：FPKM, RPKM, TPM
 # RPKM, FPKM and TPM去除基因或者转录本长度影响
 # 最常见的是下面3个：
-
 # RPKM - Reads Per Kilobase Million (for single-end sequencing)
 # FPKM - Fragments Per Kilobase Million (same as RPKM but for paired-end sequencing, makes sure that paired 
 # ends 
@@ -1331,8 +1332,10 @@ calc_cpm <-
 # TPM - Transcripts Per Kilobase Million (same as RPKM, but the order of normalizations is reversed - length 
 # first and sequencing depth second)
 # 这些normalization方法并不适合单细胞转录组测序数据，因为有一些scRNA-seq建库方法具有3端偏好性，一般是没办法测
-# 全长转录本的，所以转录本的长度跟表达量不是完全的成比例。
+# 全长转录本的，所以转录本的长度跟表达量不是完全的成比例。对于UMI来定量的，肯定是不能用的。
 # 对于这样的数据，需要重新转换成 reads counts 才能做下游分析。
+# 需要注意的是，Monocle是可以接受RPKM，FPKM，TPM为输入的，不过也有一个转换为read counts的环节
+# 另外，Smart-seq2是测定全长转录本的，是否可以使用上述方法呢？
 
 # 适用于bulk RNA-seq的normalization方法
 # 比较流行的有：
@@ -1372,18 +1375,157 @@ set.seed(1234567)
 ## 这里直接读取过滤好的数据，是一个SCESet对象，适用于scater包的
 ## http://www.biotrainee.com/jmzeng/scRNA/tung_umi.rds
 setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Testing_dataset')
-umi <- readRDS("tung_umi.rds")
+umi <- readRDS("tung_umi.rds")   # 注意这个读入的对象是SCESet，而目前后续的操作都是建立在SingleCellExperiment这个对象上的
+## We recently migrated to the SingleCellExperiment class, which uses the SummarizedExperiment class instead of the ExpressionSet class. 
+## This provides a more modern interface that supports more data formats and is under active development. Try running updateSCESet or 
+## toSingleCellExperiment on your SCESet object, which will convert this to a SingleCellExperiment object for you. This can be used in 
+##  plotPCA as before. 
+## "Scater"的开发者已经将SCESet全面升级为SingleCellExperiment，起最重要的变化是将其中的ExpressionSet Class改成了SummarizedExperiment class
+
+umi  # 修改前，注意三个slot分别是counts, exprs(CPM后在log转换，现在标准的方法) 和log2_counts(仅仅log2转换)
+str(umi)
+umi <- updateSCESet(umi)
+umi  # 修改后, 注意三个slot分别是counts，logcounts(CPM后在log转换，现在标准的方法)和log2_counts(仅仅log2转换)
+
+umi.qc <- umi[rowData(umi)$use, colData(umi)$use]
+umi.qc
+endog_genes <- !rowData(umi.qc)$is_feature_control
+dim(exprs(umi.qc[endog_genes, ]))
+umi.qc
+
+################################################# 实践 #################################################
+# 先总结，目前最最推荐的normalization方法(测序文库大小的归一化)是在CPM的基础上，在log转换，这个是scran的默认方法，也是最最推荐的方法。
+# 一般经过CPM在log转换的方法，记录到SingleCellExperiment里面的logcounts这个slot当中
+# 其他方法，看看就好，别较真
+# 先看看原始的表达值的分布情况，这里本来应该是对每一个样本画boxplot的，但是这里的样本数量太多了，这样的可视化效果很差， 就用PCA的方式，
+# 看看这表达矩阵是否可以把样本区分开，只有那些区分度非常好的normalization方法才是最优的。
+# 不过scater包提供了一个plotRLE函数，可以画出类似于样本boxplot的效果(归一化后能否柱子高度差不多)。
+
+## Raw
+plotPCA(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  run_args = list(exprs_values = "log2_counts")
+)
+
+
+## CPM
+## scater默认对表达矩阵做了cpm转换，所以可以直接提取里面的信息
+plotPCA(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  run_args = list(exprs_values = "logcounts")
+)
+# 还可以看看CPM(CPM后再log转换，现在标准的方法)和原始的log转换(log2_counts，仅仅log2转换)的表达矩阵的区别
+plotRLE(
+  umi.qc[endog_genes, ], 
+  exprs_mats = list(Raw = "log2_counts", CPM = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+
+## scran: 本质上使用的是CPM然后log转换的方法，结果也自然存储到logcounts里面去
+## 这个scran package implements a variant on CPM specialized for single-cell data，所以需要特殊的代码
+qclust <- quickCluster(umi.qc, min.size = 30)
+umi.qc <- computeSumFactors(umi.qc, sizes = 15, clusters = qclust)
+umi.qc <- normalize(umi.qc)
+plotPCA(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  run_args = list(exprs_values = 'logcounts')
+)
+
+plotRLE(
+  umi.qc[endog_genes, ], 
+  exprs_mats = list(Raw = "log2_counts", scran = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+
+summary(sizeFactors(umi.qc))
+
+# TMM, RLE(size factor), Upperquantile在这边都不是很适用，别较真，而且函数的定义，比如normalizeExprs是有问题的
+## TMM (不用太care，基本不用)
+## 需要用函数 normaliseExprs 来对SCESet对象里面的表达矩阵做TMM转换
+library(edgeR)
+umi.qc <- normaliseExprs(umi.qc, method = "TMM", feature_set = endog_genes) # 所有以normaliseExprs转换后的结果都会存入到normcounts中去
+umi.qc   # 增加了一个新的slot: normcounts，存放的是经过TMM转换后再进行cpm转换的结果
+normcounts(umi.qc)[1:10,1:3]
+plotPCASCE(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  exprs_values = "normcounts"
+)
+plotRLE(
+  umi.qc[endog_genes, ], 
+  exprs_mats = list(Raw = "log2_counts", TMM = "normcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+
+
+## Size-factor (RLE)
+umi.qc <- normaliseExprs(
+  umi.qc,
+  method = "RLE", 
+  feature_set = endog_genes
+)
+normcounts(umi.qc)[1:10,1:3]   # normcounts，存放的是经过RLE转换后再进行cpm转换的结果
+plotPCA(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  exprs_values = "normcounts"
+)
+
+
+## Upperquantile
+umi.qc <- normaliseExprs(
+  umi.qc,
+  method = "upperquartile", 
+  feature_set = endog_genes,
+  p = 0.99
+)
+normcounts(umi.qc)[1:10,1:3]
+plotPCA(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  exprs_values = "normcounts"
+)
+
+
+
+
+
+
+
+
 
 ## 如果没有这个rds对象，就自己把read counts的表达矩阵读进去，变成这个适用于scater包的SCESet对象，代码如下；
 ## Load the data and annotations:
-molecules <- read.table("molecules.txt", sep = "\t")
+molecules <- read.table("molecules.txt", sep = "\t")   # 这个文件是表达矩阵，包括线粒体基因和 ERCC spike-ins 的表达量，可以用来做质控
+dim(molecules); head(molecules[ , 1:3])
+table(grepl(pattern = '^ERCC', rownames(molecules))) # 查看下ERCC有多少个，在这个矩阵中线粒体基因也是以“ENSG”开头的，后面会指明
+
+# 这个文件是表达矩阵涉及到的所有样本的描述信息，包括样本来源于哪个细胞，以及哪个批次。
 anno <- read.table("annotation.txt", sep = "\t", header = TRUE)
-head(molecules[ , 1:3])
-head(anno)
-# The data consists of 3 individuals and 3 replicates and therefore has 9 batches in total.
+anno[1:5,]
+
+# The data consists of 3 individuals (biological replicates) and 3 replicates (technical replicates) and therefore has 9 batches in total.
 table(anno$individual, anno$replicate)
 umi <- SingleCellExperiment(
-  assays = list(counts = as.matrix(molecules)), 
+  assays = list(counts = as.matrix(molecules)), # 构建SingleCellExperiment对象的时候，表达矩阵可以有好几个slot，所以我们要用list，指明传入的是哪个slot
   colData = anno
 )
 
