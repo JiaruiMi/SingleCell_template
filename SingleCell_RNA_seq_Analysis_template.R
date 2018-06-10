@@ -1396,7 +1396,7 @@ umi.qc
 ################################################# 实践 #################################################
 # 先总结，目前最最推荐的normalization方法(测序文库大小的归一化)是在CPM的基础上，在log转换，这个是scran的默认方法，也是最最推荐的方法。
 # 一般经过CPM在log转换的方法，记录到SingleCellExperiment里面的logcounts这个slot当中
-# 其他方法，看看就好，别较真
+# 其他方法，看看就好，别较真。
 # 先看看原始的表达值的分布情况，这里本来应该是对每一个样本画boxplot的，但是这里的样本数量太多了，这样的可视化效果很差， 就用PCA的方式，
 # 看看这表达矩阵是否可以把样本区分开，只有那些区分度非常好的normalization方法才是最优的。
 # 不过scater包提供了一个plotRLE函数，可以画出类似于样本boxplot的效果(归一化后能否柱子高度差不多)。
@@ -1428,7 +1428,11 @@ plotRLE(
   colour_by = "batch"
 )
 
-## scran: 本质上使用的是CPM然后log转换的方法，结果也自然存储到logcounts里面去
+## scran: 类似于CPM然后log转换的方法，结果也自然存储到logcounts里面去
+## scran package implements a variant on CPM specialized for single-cell data (L. Lun, Bach, and Marioni 2016). Briefly this method 
+## deals with the problem of vary large numbers of zero values per cell by pooling cells together calculating a normalization factor 
+## (similar to CPM) for the sum of each pool. Since each cell is found in many different pools, cell-specific factors can be 
+## deconvoluted from the collection of pool-specific factors using linear algebra.
 ## 这个scran package implements a variant on CPM specialized for single-cell data，所以需要特殊的代码
 qclust <- quickCluster(umi.qc, min.size = 30)
 umi.qc <- computeSumFactors(umi.qc, sizes = 15, clusters = qclust)
@@ -1503,6 +1507,48 @@ plotPCA(
   shape_by = "individual",
   exprs_values = "normcounts"
 )
+
+
+## Downsampling
+## 最后要介绍的这个去除文库大小差异的方法是从大的文库样本里面随机抽取部分reads使之文库大小缩减到跟其它文库一致。它的优点是抽样
+## 过程中会造成一些基因表达量为0，这样人为创造了dropout情况，弥补了系统误差。但是有个很重要的缺点，就是每次抽样都是随机的，这样
+## 结果无法重复，一般需要多次抽样保证结果的鲁棒性
+## 抽样函数如下：
+
+Down_Sample_Matrix <-
+  function (expr_mat) {
+    min_lib_size <- min(colSums(expr_mat))
+    down_sample <- function(x) {
+      prob <- min_lib_size/sum(x)
+      return(unlist(lapply(x, function(y) {
+        rbinom(1, y, prob)
+      })))
+    }
+    down_sampled_mat <- apply(expr_mat, 2, down_sample)
+    return(down_sampled_mat)
+  }
+## 抽样后的counts矩阵赋值给SingleCellExperiment对象的新的属性。
+logcounts(umi.qc) <- log2(Down_Sample_Matrix(counts(umi.qc)) + 1)  # 这一步比较耗时，对象存储到logcounts这个slot里面
+plotPCA(
+  umi.qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  run_args = list(exprs_values = "logcounts")
+)
+plotRLE(
+  umi.qc[endog_genes, ], 
+  exprs_mats = list(Raw = "log2_counts", DownSample = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+
+
+
+
+
+
+
 
 
 
