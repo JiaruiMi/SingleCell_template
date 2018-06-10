@@ -1306,7 +1306,7 @@ ggplot(as.data.frame(pData(pancreas.1)),
 
 
 #========================================================================================================
-#                比较不同的对单细胞转录组数据normalization方法, 特指测序文库的归一化 (生信技能树)
+#                比较不同的对单细胞转录组数据normalization方法, 特指测序文库大小的归一化 (生信技能树)
 #========================================================================================================
 # 使用CPM去除文库大小影响
 # 之所以需要normalization，就是因为测序的各个细胞样品的总量不一样，所以测序数据量不一样，就是文库大小不同，
@@ -1428,15 +1428,21 @@ plotRLE(
   colour_by = "batch"
 )
 
-## scran: 类似于CPM然后log转换的方法，结果也自然存储到logcounts里面去
+## scran: 类似于CPM然后log转换的方法，结果也自然存储到logcounts里面去，计算一个也叫size factor的东西
 ## scran package implements a variant on CPM specialized for single-cell data (L. Lun, Bach, and Marioni 2016). Briefly this method 
 ## deals with the problem of vary large numbers of zero values per cell by pooling cells together calculating a normalization factor 
 ## (similar to CPM) for the sum of each pool. Since each cell is found in many different pools, cell-specific factors can be 
 ## deconvoluted from the collection of pool-specific factors using linear algebra.
+## For CPM normalisation we use scater’s calculateCPM() function. For RLE, UQ and TMM we use scater’s normaliseExprs() function. 
+## For scran we use scran package to calculate size factors (it also operates on SingleCellExperiment class) and scater’s normalize() 
+## to normalise the data. All these normalization functions save the results to the logcounts slot of the SCE object. 
 ## 这个scran package implements a variant on CPM specialized for single-cell data，所以需要特殊的代码
-qclust <- quickCluster(umi.qc, min.size = 30)
+qclust <- quickCluster(umi.qc, min.size = 30) 
+str(umi.qc)
 umi.qc <- computeSumFactors(umi.qc, sizes = 15, clusters = qclust)
+str(umi.qc)
 umi.qc <- normalize(umi.qc)
+str(umi.qc)
 plotPCA(
   umi.qc[endog_genes, ],
   colour_by = "batch",
@@ -1454,23 +1460,24 @@ plotRLE(
 
 summary(sizeFactors(umi.qc))
 
-# TMM, RLE(size factor), Upperquantile在这边都不是很适用，别较真，而且函数的定义，比如normalizeExprs是有问题的
-## TMM (不用太care，基本不用)
+# TMM, RLE(size factor), Upperquantile是针对bulk RNA-seq开发的，对scRNA有可能不是很适用
+## TMM 
 ## 需要用函数 normaliseExprs 来对SCESet对象里面的表达矩阵做TMM转换
 library(edgeR)
 umi.qc <- normaliseExprs(umi.qc, method = "TMM", feature_set = endog_genes) # 所有以normaliseExprs转换后的结果都会存入到normcounts中去
-umi.qc   # 增加了一个新的slot: normcounts，存放的是经过TMM转换后再进行cpm转换的结果
+umi.qc   # 增加了一个新的slot: normcounts，存放的是经过TMM转换后再进行cpm转换的结果; 而logcounts存放的才是TMM的结果
 normcounts(umi.qc)[1:10,1:3]
+logcounts(umi.qc)[1:10,1:3]
 plotPCASCE(
   umi.qc[endog_genes, ],
   colour_by = "batch",
   size_by = "total_features",
   shape_by = "individual",
-  exprs_values = "normcounts"
+  run_args = list(exprs_values = "logcounts")
 )
 plotRLE(
   umi.qc[endog_genes, ], 
-  exprs_mats = list(Raw = "log2_counts", TMM = "normcounts"),
+  exprs_mats = list(Raw = "log2_counts", TMM = "logcounts"),
   exprs_logged = c(TRUE, TRUE),
   colour_by = "batch"
 )
@@ -1483,12 +1490,19 @@ umi.qc <- normaliseExprs(
   feature_set = endog_genes
 )
 normcounts(umi.qc)[1:10,1:3]   # normcounts，存放的是经过RLE转换后再进行cpm转换的结果
+logcounts(umi.qc)[1:10,1:3] # logcounts存放的才是RLE转换后的结果
 plotPCA(
   umi.qc[endog_genes, ],
   colour_by = "batch",
   size_by = "total_features",
   shape_by = "individual",
-  exprs_values = "normcounts"
+  exprs_values = "logcounts"
+)
+plotRLE(
+  umi.qc[endog_genes, ], 
+  exprs_mats = list(Raw = "log2_counts", TMM = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
 )
 
 
@@ -1499,15 +1513,21 @@ umi.qc <- normaliseExprs(
   feature_set = endog_genes,
   p = 0.99
 )
-normcounts(umi.qc)[1:10,1:3]
+normcounts(umi.qc)[1:10,1:3] # normcounts存放的是Upperquantile后CPM转换后的结果
+logcounts(umi.qc)[1:10,1:3] # logcounts存放的是upperquantile后的结果
 plotPCA(
   umi.qc[endog_genes, ],
   colour_by = "batch",
   size_by = "total_features",
   shape_by = "individual",
-  exprs_values = "normcounts"
+  run_args = list(exprs_values = "logcounts")
 )
-
+plotRLE(
+  umi.qc[endog_genes, ], 
+  exprs_mats = list(Raw = "log2_counts", TMM = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
 
 ## Downsampling
 ## 最后要介绍的这个去除文库大小差异的方法是从大的文库样本里面随机抽取部分reads使之文库大小缩减到跟其它文库一致。它的优点是抽样
