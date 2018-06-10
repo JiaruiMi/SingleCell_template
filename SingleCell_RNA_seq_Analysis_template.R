@@ -1306,7 +1306,7 @@ ggplot(as.data.frame(pData(pancreas.1)),
 
 
 #========================================================================================================
-#                比较不同的对单细胞转录组数据normalization方法, 特指测序文库大小的归一化 (生信技能树)
+#             比较不同的对单细胞转录组数据normalization方法, 特指测序文库大小的归一化 (生信技能树)
 #========================================================================================================
 # 使用CPM去除文库大小影响
 # 之所以需要normalization，就是因为测序的各个细胞样品的总量不一样，所以测序数据量不一样，就是文库大小不同，
@@ -2287,13 +2287,17 @@ lambdas = rbeta(1000, a, b)
 counts = sapply(g*lambdas, function(l) {rpois(1, lambda=l)})
 hist(counts, col="grey50", xlab="Read Counts", main="Poisson-Beta")
 
-#=============================================================================================
-#                          比较不同的对单细胞转录组数据聚类的方法
-#=============================================================================================
+
+
+
+
+#========================================================================================================
+#                          比较不同的对单细胞转录组数据聚类的方法 （生信技能树）
+#========================================================================================================
 # 背景介绍
 # 聚类之前必须要对表达矩阵进行normalization，而且要去除一些批次效应等外部因素。通过对表达矩阵的聚类，可以把细胞群体分成不同的状态，
 # 解释为什么会有不同的群体。不过从计算的角度来说，聚类还是蛮复杂的，各个细胞并没有预先标记好，而且也没办法事先知道可以聚多少类。
-# 尤其是在单细胞转录组数据里面有很高的噪音，基因非常多，意味着的维度很高。对这样的高维数据，需要首先进行降维，可以选择PCA或者t-SNE
+# 尤其是在单细胞转录组数据里面有很高的噪音，基因非常多，意味着的维度很高。对这样的高维数据，需要首先进行降维去噪声，可以选择PCA或者t-SNE
 # 方法。聚类的话，一般都是无监督聚类方法，比如：hierarchical clustering, k-means clustering and graph-based clustering。
 # 算法略微有一点复杂，略过吧。
 
@@ -2318,63 +2322,76 @@ set.seed(1234567)
 
 # 这里选取的是数据，加载了这个scater包的SCESet对象，包含着一个22431 features, 268 samples 的表达矩阵。供10已知的种细胞类型，
 # 这样聚类的时候就可以跟这个已知信息做对比，看看聚类效果如何。可以直接用plotPCA来简单PCA并且可视化。
-deng <- readRDS("deng-reads.rds")
-deng
-dim(counts(deng ))
-head(colData(deng))
-head(rowData(deng))
-table(colData(deng)$cell_type2)
-plotPCA(deng, colour_by = "cell_type2")
+pollen <- readRDS("pollen.rds") # 在生信技能树上下载的数据是SCESet对象，需要将其转换成SingleCellExperiment对象
+pollen <- updateSCESet(pollen)
+pollen # 注意一下表达矩阵的slot的名字
+head(colData(pollen))
+head(rowData(pollen))
+table(colData(pollen)$cell_type1)
+plotPCA(pollen, colour_by = "cell_type1")
 ### 可以看到简单的PCA也是可以区分部分细胞类型的，只不过在某些细胞相似性很高的群体区分力度不够，
 ### 所以需要开发新的算法来解决这个聚类的问题。
 
 
-#####################################  SC聚类  ##################################### 
-deng <- sc3_estimate_k(deng)
-metadata(deng)$sc3$k_estimation
-plotPCA(deng, colour_by = "cell_type1")
-## 准备 SCESet对象 数据给 SC3方法，先预测能聚多少个类。
-## 这里是并行计算，所以速度还可以
-deng <- sc3(deng, ks = 10, biology = TRUE)
-deng
-head(rowData(deng))
-## 可以看到SC3方法处理后的SCESet对象的基因信息增加了5列，比较重要的是sc3_gene_filter信息，决定着该基因是否拿去聚类，
+###################################################  SC3聚类  ################################################### 
+## SC3聚类的原理: 
+
+## 准备SingleCellExperiment对象 数据给 SC3方法，先预测能聚多少个类。
+pollen <- sc3_estimate_k(pollen) # 增加了metadata: sc3这个元素
+str(pollen)
+metadata(pollen)$sc3$k_estimation
+plotPCA(pollen, colour_by = "cell_type1")
+## Now we are ready to run SC3 (we also ask it to calculate biological properties of the clusters):
+## 由于新的SingleCellExperiment对象pollen里面没有counts这个slot，要么我们赋予counts这个slot，要么我们在下面的参数中增加gene_filter = F
+## 理论上，应该筛选基因来进行后续的聚类的，最好的方式是追加counts这一个slot
+### pollen <- sc3(pollen, ks = 10, biology = TRUE, gene_filter = F) 不推荐
+counts(pollen) <- logcounts(pollen)
+pollen
+pollen <- sc3(pollen, ks = 10, biology = TRUE) # 这里是并行计算，所以速度还可以
+head(rowData(pollen))
+## 可以看到SC3方法处理后的SingleCellExperiment对象的基因信息增加了5列，比较重要的是sc3_gene_filter信息，决定着该基因是否拿去聚类，
 ## 因为基因太多了，需要挑选
-table(rowData(deng)$sc3_gene_filter)
+table(rowData(pollen)$sc3_gene_filter)
 ### 只有一半的基因被挑选去聚类了
+colData(pollen) # 在coldata当中增加了一列，是细胞的cluster属性
 
 ## 后面是一些可视化
-sc3_plot_consensus(deng, k = 10, show_pdata = "cell_type2")
-sc3_plot_silhouette(deng, k = 10)
-sc3_plot_expression(deng, k = 10, show_pdata = "cell_type2")
-sc3_plot_markers(deng, k = 10, show_pdata = "cell_type2")
-plotPCA(deng, colour_by = "sc3_10_clusters")
+sc3_plot_consensus(pollen, k = 10, show_pdata = "cell_type1")
+sc3_plot_silhouette(pollen, k = 10)
+sc3_plot_expression(pollen, k = 10, show_pdata = "cell_type1")
+sc3_plot_markers(pollen, k = 10, show_pdata = "cell_type1")
+colData(pollen)
+plotPCA(pollen, colour_by = "sc3_10_clusters")
 
 ## 还支持shiny的交互式聚类，暂时不显示
 sc3_interactive(deng)
 # 很明显可以看到SC3聚类的效果要好于普通的PCA
 
 
-#####################################  pcaReduce  #####################################
+###########################################  pcaReduce  ###########################################
 # use the same gene filter as in SC3
-input <- logcounts(deng[rowData(deng)$sc3_gene_filter, ])
+input <- logcounts(pollen[rowData(pollen)$sc3_gene_filter, ])
 # run pcaReduce 1 time creating hierarchies from 1 to 30 clusters
 pca.red <- PCAreduce(t(input), nbt = 1, q = 30, method = 'S')[[1]]
 ##  这里对2~30种类别的情况都分别对样本进行分组。
 ## 我们这里取只有10组的时候，这些样本是如何分组的信息来可视化。
-colData(deng)$pcaReduce <- as.character(pca.red[,32 - 10])
-plotPCA(deng, colour_by = "pcaReduce")
+colData(pollen)$pcaReduce <- as.character(pca.red[,32 - 10])
+table(colData(pollen)$pcaReduce)  # pcaReduce相当于是cluster编号
+plotPCA(pollen, colour_by = "pcaReduce")
 
 
-#####################################  tSNE + kmeans  #####################################
+#########################################  tSNE + kmeans  #########################################
 # scater包包装了 Rtsne 和 ggplot2 来做tSNE并且可视化。
-deng <- plotTSNE(deng, rand_seed = 1, return_SCE = TRUE)
+pollen <- runTSNE(pollen) # 增加了reducedDimNames(1): TSNE和colData(pollen)当中tSNE_kmeans这一列
+plotTSNE(pollen, run_args = list(rand_seed = 1, return_SCESet = TRUE))
+pollen; colData(pollen)
 ## 上面的tSNE的结果，下面用kmeans的方法进行聚类，假定是8类细胞类型。
-colData(deng)$tSNE_kmeans <- as.character(kmeans(deng@reducedDims$TSNE, centers = 8)$clust)
-plotTSNE(deng, rand_seed = 1, colour_by = "tSNE_kmeans")
+colData(pollen)$tSNE_kmeans <- as.character(kmeans(pollen@reducedDims$TSNE, centers = 8)$clust)
+plotTSNE(pollen, run_args = list(rand_seed = 1), colour_by = "tSNE_kmeans")
 
 
 #####################################  SINCERA  #####################################  
+# 没看懂，先跳过吧
 # perform gene-by-gene per-sample z-score transformation
 dat <- apply(input, 1, function(y) scRNA.seq.funcs::z.transform.helper(y))
 # hierarchical clustering
