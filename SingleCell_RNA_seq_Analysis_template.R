@@ -273,9 +273,12 @@ DoHeatmap(object = pancreas_1, genes.use = top10$gene, slim.col.label = TRUE, re
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
 
 
-#=============================================================================================
-#                      "Monocle2" package (Monocle 2.8.0)  生信技能树
-#=============================================================================================
+#================================================================================================================
+#
+#          "Monocle2" package (Monocle 2.8.0)  生信技能树，重点Monocle对象的构建(RPKM或者counts data)
+#                                      后续分析基于内置的RPKM数据进行
+#
+#================================================================================================================
 # 在nature methods杂志发表的文章，更新为monocle2版本并且更换了主页，功能也不仅仅是差异分析那么简单。还包括pseudotime,
 # clustering分析，而且还可以进行基于转录本的差异分析，其算法是BEAM (used in branch analysis) and Census (the core of relative2abs)，
 # 也单独发表了文章。
@@ -311,7 +314,7 @@ head(HSMM_gene_annotation)
 head(HSMM_sample_sheet)
 
 # 这个数据集中包含了两种细胞类型：
-#  In the myoblast experiment, the culture contains fibroblasts that came from the original muscle biopsy used 
+# In the myoblast experiment, the culture contains fibroblasts that came from the original muscle biopsy used 
 # to establish the primary cell culture. Myoblasts express some key genes that fibroblasts don't. Selecting 
 # only the genes that express, for example, sufficiently high levels of MYF5 excludes the fibroblasts. Likewise, 
 # fibroblasts express high levels of ANPEP (CD13), while myoblasts tend to express few if any transcripts of 
@@ -322,8 +325,48 @@ head(HSMM_sample_sheet)
 # 主要是读取表达矩阵和样本描述信息，这里介绍两种方式，一种是读取基于 subjunc+featureCounts 分析后的reads counts矩阵，
 # 一种是读取 tophat+cufflinks 得到的RPKM表达矩阵
 # 如何读取外部数据，请参考“https://mp.weixin.qq.com/s/zCfDkxbVTxjFQ5QAIULYjA”
+# 读取上游分析的输出文件(比如表达矩阵和样本注释都是txt格式的文件)
+setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Testing_dataset')
+library(monocle)
+library(scater, quietly = TRUE)
+library(knitr)
+options(stringsAsFactors = FALSE)
 
-# 在这里我们读取HSMMSingleCell包中的测试数据
+# 这个文件是表达矩阵，包括线粒体基因和 ERCC spike-ins 的表达量，可以用来做质控
+molecules <- read.table("molecules.txt", sep = "\t")
+dim(molecules)
+
+## 这个文件是表达矩阵涉及到的所有样本的描述信息，包括样本来源于哪个细胞，以及哪个批次。
+anno <- read.table("annotation.txt", sep = "\t", header = TRUE)  # anno是phenoData，存储的是样品的信息
+dim(anno)
+rownames(anno)=colnames(molecules)  # 为了让phenoNames is the same between assayData and phenoData，必不可少
+
+## 以下是为了在featureData当中增加gene_short_name一列
+library(org.Hs.eg.db)  
+eg2symbol=toTable(org.Hs.egSYMBOL)
+eg2ensembl=toTable(org.Hs.egENSEMBL)
+egid=eg2ensembl[ match(rownames(molecules),eg2ensembl$ensembl_id),'gene_id']
+symbol=eg2symbol[match( egid ,eg2symbol$gene_id),'symbol']
+gene_annotation = data.frame(ensembl=rownames(molecules),   # gene_annotation是featureData，存储了基因的ensembl_id, gene_symbol和entrez_id
+                             gene_short_name=symbol,
+                             egid=egid)
+rownames(gene_annotation)=rownames(molecules)  # 为了让featureNames is the same between assayData and featureData，必不可少
+
+pd <- new("AnnotatedDataFrame", data = anno)
+fd <- new("AnnotatedDataFrame", data = gene_annotation)
+# tung <- newCellDataSet(as.matrix(molecules), phenoData = pd, featureData = fd)
+tung <- newCellDataSet(as(as.matrix(molecules), "sparseMatrix"),
+                       phenoData = pd, 
+                       featureData = fd,
+                       lowerDetectionLimit=0.5,
+                       expressionFamily=negbinomial.size())
+
+tung
+
+
+
+# 在这里我们读取HSMMSingleCell包中的测试数据，或者使用内置数据个构建S4对象：
+getwd()
 pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
 fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
 
@@ -336,13 +379,11 @@ HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
                        phenoData = pd, 
                        featureData = fd,
                        lowerDetectionLimit=0.1,
-                       expressionFamily=tobit(Lower=0.1))
+                       expressionFamily=tobit(Lower=0.1))  # 注意因为读入的是RPKM，所以统计学模型使用的是tobit
 
-# Next, use it to estimate RNA counts. RPC的含义是mRNAs per cell
-rpc_matrix <- relative2abs(HSMM)
+# Next, use it to estimate RNA counts. RPC的含义是mRNAs per cell; rpkm格式的表达值需要转换成reads counts之后才可以进行下游分析
+rpc_matrix <- relative2abs(HSMM)    # 从校正后的相对值转换为绝对值
 rpc_matrix[1:10,1:5] 
-
-## rpkm格式的表达值需要转换成reads counts之后才可以进行下游分析！
 
 # Now, make a new CellDataSet using the RNA counts，既然转变成了counts data，则服从了负二项分布的规律
 # 统计学模型相应的进行改变：Negative binomial distribution with fixed variance (which is automatically 
@@ -351,7 +392,7 @@ HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
                        phenoData = pd, 
                        featureData = fd,
                        lowerDetectionLimit=0.5,
-                       expressionFamily=negbinomial.size())
+                       expressionFamily=negbinomial.size())   # 注意，将RPKM或者TPM改成了counts以后，统计学模型也就相应改成了负二项分布
 
 ## 下面的分析，都基于内置数据构建的S4对象，HSMM
 
@@ -734,6 +775,29 @@ plot_genes_in_pseudotime(cds_subset, color_by="Hours")
 #         "Monocle2" package (Monocle 2.8.0)  Cole Trapnell online tutorial（不要轻易run）
 #
 #=============================================================================================
+# Monocle的历史：主要是针对单细胞转录组测序数据开发的，用来找不同细胞类型或者不同细胞状态的差异表达基因。分析起始是表达矩阵，
+# 作者推荐用比较老旧的Tophat+Cufflinks流程(因为Cole Trapnell开发的)，或者RSEM, eXpress,Sailfish,等等。需要的是基于转录本的表达矩阵，
+# 我一般用subjunc+featureCounts 来获取表达矩阵。
+# 分为两个版本：1.0版发表于2014年的Nature Biotechnology，还用的是tophat+cufflinks组合来计算表达量， 就不过多介绍了。
+# 2.0版本：发表于2017年的Nature Methods，功能也不仅仅是差异分析那么简单。还包括pseudotime,clustering分析，而且还可以进行基于转录本的
+# 差异分析，其算法是BEAM (used in branch analysis) and Census (the core of relative2abs)，也单独发表了文章。
+# 用了4个公共的数据来测试说明其软件的用法和优点。
+
+# the HSMM data set, GSE52529 (ref. 1);
+# the lung data set, GSE52583 (ref. 8);
+# the Paul et al. data set ;
+# the Olsson data set9, synapse ID syn4975060.
+
+# 读取表达矩阵和分组信息，需要理解其定义好的一些S4对象。
+# 还提出了好几个算法：
+
+# dpFeature: Selecting features from dense cell clusters
+# Reversed graph embedding
+# DRTree: Dimensionality Reduction via Learning a Tree
+# DDRTree: discriminative dimensionality reduction via learning a tree
+# Census: a normalization method to convert of single-cell mRNA transcript to relative transcript counts.
+# BEAM : to test for branch-dependent gene expression by formulating the problem as a contrast between two negative binomial GLMs.
+# Branch time point detection algorithm :
 
 library(Biobase)
 library(knitr)
@@ -743,6 +807,14 @@ library(HSMMSingleCell)
 library(monocle)
 library(M3Drop)
 
+################################ STEP 0: 使用流程解析 ################################
+
+# 载入表达矩阵并转化为CellDataSet对象
+# 对表达矩阵进行基于基因和样本的过滤并可视化
+# 无监督的聚类
+# pseudotime分析
+# 差异分析
+
 ################################ STEP 1: The CellDataSet class ################################
 # Monocle倾向于加载absolute transcript counts(from UMI experiments)，或者经过矫正后的数据(FPKM or TPM).可以接受
 # 来自与10X Genomics公司的CellRange产生的数据。有一点非常值得注意的是，Although Monocle can be used with raw 
@@ -751,7 +823,7 @@ library(M3Drop)
 # load up FPKM or TPM values instead of raw read counts.也就是Monocle后续的计算对原始的reads数不是很友好，不建议
 # 加载原始reads。
 # FPKM或者TPM的矫正后的定量值来自于Cufflinks。当然在后续的统计模型的处理时，Monocle默认使用对应于UMI的绝对定量
-# 结果，并采用负二项分布的统计模型进行计算和下游数据的处理。如果使用FPKM或者TPM，则建议修改模型的设置。
+# 结果(基于转录本的counts矩阵)，并采用负二项分布的统计模型进行计算和下游数据的处理。如果使用FPKM或者TPM，则建议修改模型的设置。
 # 在加载数据时，除了常规三张表之间的匹配关系意外，one of the columns of the featureData should be named "gene_short_name".
 
 # 非常重要的一点，不要自说自话自己normalize数据：if you do have UMI data, you should not normalize it yourself prior 
@@ -761,6 +833,26 @@ library(M3Drop)
 # yourself risks breaking some of Monocle's key steps.
 
 # Monocle最建议加载的数据是transcript count data，尤其是基于UMI序列的绝对定量
+
+## Monocle的S4对象--CellDataSet 
+## 主要是基于 CellDataSet 对象来进行下游分析，继承自ExpressionSet对象，也是常见的3个组成：
+
+## exprs, a numeric matrix of expression values, where rows are genes, and columns are cells
+## phenoData, an AnnotatedDataFrame object, where rows are cells, and columns are cell attributes (such as cell type, 
+## culture condition, day captured, etc.)
+## featureData, an AnnotatedDataFrame object, where rows are features (e.g. genes), and columns are gene attributes, such as biotype, 
+## gc content, etc.
+
+# 从头创建对象，代码如下：创建对象的时候需要指定引入的表达矩阵的方法，monocle2推荐用基于转录本的counts矩阵，同时也是默认的参数 
+# expressionFamily=negbinomial.size() ，如果是其它RPKM/TMP等等，需要找到对应的参数。
+# do not run
+# HSMM_expr_matrix <- read.table("fpkm_matrix.txt")
+# HSMM_sample_sheet <- read.delim("cell_sample_sheet.txt")
+# HSMM_gene_annotation <- read.delim("gene_annotations.txt")
+# pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
+# fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
+# HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix), phenoData = pd, featureData = fd)
+
 
 pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
 fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
@@ -772,10 +864,10 @@ HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
 # expressionFamily argument to newCellDataSet。FPKM/TPM服从log转换后的正态分布；count data服从负二项分布。
 # 所以在统计学模型选择的时候，建议参考：http://cole-trapnell-lab.github.io/monocle-release/docs/#getting-started-with-monocle
 # Do not run
-HSMM <- newCellDataSet(count_matrix,
-                       phenoData = pd,
-                       featureData = fd,
-                       expressionFamily=negbinomial.size())
+# HSMM <- newCellDataSet(count_matrix,
+#                       phenoData = pd,
+#                       featureData = fd,
+#                       expressionFamily=negbinomial.size())
 #### 针对非常大的数据集，尤其是有上万个细胞，建议使用稀疏矩阵：理论基础是，大部分细胞中的基因数是0
 # Using sparse matrices can help you work with huge datasets on a typical computer. We generally recommend the 
 # use of sparseMatrices for most users, as it speeds up many computations even for more modestly sized datasets.
