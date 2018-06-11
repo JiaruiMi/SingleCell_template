@@ -358,17 +358,24 @@ rownames(gene_annotation)=rownames(molecules)  # 为了让featureNames is the sa
 pd <- new("AnnotatedDataFrame", data = anno)
 fd <- new("AnnotatedDataFrame", data = gene_annotation)
 # tung <- newCellDataSet(as.matrix(molecules), phenoData = pd, featureData = fd)
-tung <- newCellDataSet(as(as.matrix(molecules), "sparseMatrix"),
+tung <- newCellDataSet(as(as.matrix(molecules), "sparseMatrix"),   
                        phenoData = pd, 
                        featureData = fd,
                        lowerDetectionLimit=0.5,
                        expressionFamily=negbinomial.size())
 
 tung
+## sparseMatrix对于超大的数据集甚至是中等数据集都可以可以节省不少空间并提高运行速度，所以：To work with your data in a sparse format, 
+## simply provide it to Monocle as a sparse matrix from the Matrix package；也就是使用Matrix函数将普通的输入密集矩阵转变为稀疏矩阵。
+## 很多pipeline，例如CellRanger下机的数据本身就是稀疏矩阵了(数据格式为MTX)，在构建CellDataSet对象的时候，直接导入即可，别先使用as.matrix()
+## 先转成密集矩阵，在用Matrix包再转成稀疏矩阵。针对CellRanger的输出，请进一步参考Monocle官网教程：
+## http://cole-trapnell-lab.github.io/monocle-release/docs/#recommended-analysis-protocol
+
 ## 针对expressionFamily一共有4种参数可供选择，negbinomial.size()，negbinomial()，tobit()，gaussianff()。其中第一种和第三种比较常用。
 ## negbinomial()会比negbinomial.size()稍稍更加准确一点，但是运行速度慢了不少，所以不建议使用。tobit()是专门针对FPKM和RPMK的。gaussianff()
 ## 是针对已经normalization后正态分布的数据。正如之前所说Monocle是不建议先normalize在构建CellDataSet对象的，而且使用这个方法，后续部分
-## Monocle feature不好使。
+## Monocle feature不好使。另外值得注意的是，对于相对表达量数据，如RPKM/TPM，我们在进行处理的时候，会将其转换成transcript counts(通过
+## 使用函数relative2abs())，转换产生的绝对counts就服从负二项分布了，可以使用negbinomial.size()，并且比相对值使用tobit()来得更好。
 
 
 # 在这里我们读取HSMMSingleCell包中的测试数据，或者使用内置数据个构建S4对象：
@@ -378,7 +385,7 @@ fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
 
 # First create a CellDataSet from the relative expression levels
 
-## 这里仅仅是针对rpkm表达矩阵的读取，我们选取的统计学模型是tobit
+## 这里仅仅是针对rpkm表达矩阵的读取，我们选取的统计学模型是tobit，这种方法没有把rpkm转换成counts的方法好
 ## Tobits are truncated normal distributions. Using tobit() will tell Monocle to log-transform your data where 
 ## appropriate. Do not transform it yourself.
 HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),   
@@ -388,43 +395,56 @@ HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
                        expressionFamily=tobit(Lower=0.1))  # 注意因为读入的是RPKM，所以统计学模型使用的是tobit
 
 # Next, use it to estimate RNA counts. RPC的含义是mRNAs per cell; rpkm格式的表达值需要转换成reads counts之后才可以进行下游分析
+# Monocle 2 includes an algorithm called Census which performs this conversion. Census算法就是用来解决这个转换问题的。
 rpc_matrix <- relative2abs(HSMM)    # 从校正后的相对值转换为绝对值
 rpc_matrix[1:10,1:5] 
 
 # Now, make a new CellDataSet using the RNA counts，既然转变成了counts data，则服从了负二项分布的规律
 # 统计学模型相应的进行改变：Negative binomial distribution with fixed variance (which is automatically 
-# calculated by Monocle). Recommended for most users.
+# calculated by Monocle). Recommended for most users. 同时lowerDetectionLimit也要相应更改。
 HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
                        phenoData = pd, 
                        featureData = fd,
-                       lowerDetectionLimit=0.5,
+                       lowerDetectionLimit=0.5,  #  we have changed the value of lowerDetectionLimit to reflect the new scale of expression
                        expressionFamily=negbinomial.size())   # 注意，将RPKM或者TPM改成了counts以后，统计学模型也就相应改成了负二项分布
 
 ## 下面的分析，都基于内置数据构建的S4对象，HSMM
 
 # 必要的矫正（量化因子和散度）：Size factors help us normalize for differences in mRNA recovered across cells, 
 # and "dispersion" values will help us perform differential expression analysis later.
+# 这两个estimate都是针对负二项分布的数据才有用。
 HSMM <- estimateSizeFactors(HSMM)
 HSMM <- estimateDispersions(HSMM)
 ### Warning: Deprecated, use tibble::rownames_to_column() instead.
+### 至此，我们的HSMM构建完成，可以进行后续的分析了。
 
 ###################################### 过滤低质量细胞和未检测到的基因 ######################################
+# 因为有可能有空的well，dead cell或者doublet的存在，会影响后续的分析，比如pseudotime。
 # 基于基因的过滤
-##  这里只是把基因挑选出来，并没有对S4对象进行过滤操作。 这个detectGenes函数还计算了每个细胞里面表达的基因数量。
-HSMM <- detectGenes(HSMM, min_expr = 0.1)
-print(head(fData(HSMM)))
+##  这里只是把基因挑选出来，并没有对S4对象进行过滤操作。 这个detectGenes函数还计算了每个细胞里面表达的基因数量。有点类似于CalculateQCMetrics
+HSMM <- detectGenes(HSMM, min_expr = 0.1)  
+print(head(fData(HSMM)))    # num_cells_expressed，某个gene在多少个细胞当中有表达
 
 ## 对每个基因都检查一下在多少个细胞里面是有表达量的。
-## 只留下至少在10个细胞里面有表达量的那些基因，做后续分析
+## 只留下至少在10个细胞里面有表达量的那些基因，做后续分析，当然如果你感兴趣的是一些稀有细胞，这个参数的设定就要琢磨一下了
 expressed_genes <- row.names(subset(fData(HSMM), num_cells_expressed >= 10))
 length(expressed_genes) ## 只剩下了14224个基因
 
 ## The HSMM dataset included with this package has scoring columns built in. 说白了就是写质控数据反应这个细胞的测序
-## 结果能不能在后续进行使用
+## 结果能不能在后续进行使用，对细胞(样本)进行过滤。
 print(head(pData(HSMM))) 
+
+valid_cells <- row.names(subset(pData(HSMM),     # 根据pData当中的参数，对细胞进行过滤
+                                Cells.in.Well == 1 &
+                                  Control == FALSE &
+                                  Clump == FALSE &
+                                  Debris == FALSE &
+                                  Mapped.Fragments > 1000000))
+HSMM <- HSMM[,valid_cells]
 
 # 基于样本表达量进行过滤，以下代码说白了就是眼见为实，看看不同细胞的mRNA的分布情况
 ## 这里选择的是通过不同时间点取样的细胞来进行分组查看，把超过2个sd 的那些样本的临界值挑选出来，下一步过滤的时候使用。
+HSMM; str(HSMM)
 pData(HSMM)$Total_mRNAs <- Matrix::colSums(exprs(HSMM))
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs < 1e6]
 upper_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) +    # 用来在后面的图上画线，设定比较高的阈值是防止出现双细胞或者多细胞的情况出现
@@ -436,14 +456,18 @@ qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
   geom_vline(xintercept = lower_bound) +
   geom_vline(xintercept = upper_bound)
 
-# 执行过滤并可视化检查一下
+# 执行过滤并可视化检查一下；我们将不满足要求的细胞过滤掉以后，对每个细胞的表达量进行log转换后，理论上应该服从正态分布。
 ## 上面已经根据基因表达情况以及样本的总测序数据选择好了阈值，下面就可以可视化并且对比检验一下执行过滤与否的区别。
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs > lower_bound & 
                pData(HSMM)$Total_mRNAs < upper_bound]                                 
 HSMM <- detectGenes(HSMM, min_expr = 0.1)
 HSMM
+
+# Log-transform each value in the expression matrix.
 L <- log(exprs(HSMM[expressed_genes,]))
+# Standardize each gene, so that they are all on the same scale, then melt the data with plyr so we can plot it easily
 melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+# Plot the distribution of the standardized gene expression values.
 qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, size=0.5, color='red') + 
   xlab("Standardized log(FPKM)") +
   ylab("Density")
@@ -455,6 +479,10 @@ qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, 
 ## 下面这个代码只适用于这个测试数据， 主要是生物学背景知识，用MYF5基因和ANPEP基因来对细胞进行分类，可以区分Myoblast和Fibroblast。
 ## 如果是自己的数据，建议多读读paper看看如何选取合适的基因，或者干脆跳过这个代码。
 ## 根据基因名字找到其在表达矩阵的ID，这里是ENSEMBL数据库的ID（MYF5_id和ANPEP_id）
+## For example, you could provide a function for each of several cell types. These functions accept as input the expression data for 
+## each cell, and return TRUE to tell Monocle that a cell meets the criteria defined by the function. So you could have one function 
+## that returns TRUE for cells that express myoblast-specific genes, another function for fibroblast-specific genes, etc. Here's an 
+## example of such a set of "gating" functions
 MYF5_id <- row.names(subset(fData(HSMM), gene_short_name == "MYF5"))
 ANPEP_id <- row.names(subset(fData(HSMM), gene_short_name == "ANPEP"))
 ## 这里选取的基因取决于自己的单细胞实验设计
@@ -469,11 +497,15 @@ ANPEP_id <- row.names(subset(fData(HSMM), gene_short_name == "ANPEP"))
 # The functions are organized into a small data structure called a CellTypeHierarchy, that Monocle uses to 
 # classify the cells. You first initialize a new CellTypeHierarchy object, then register your gating functions 
 # within it. Once the data structure is set up, you can use it to classify all the cells in the experiment:
-cth <- newCellTypeHierarchy()
 
+## 首先使用newCellTypeHierarchy()进行初始
+cth <- newCellTypeHierarchy() 化
+
+## 然后添加对细胞进行分类的内容
 cth <- addCellType(cth, "Myoblast", classify_func = function(x) { x[MYF5_id,] >= 1 })
 cth <- addCellType(cth, "Fibroblast", classify_func = function(x){ x[MYF5_id,] < 1 & x[ANPEP_id,] > 1 })
 
+## 使用classifyCells()函数对每个细胞进行有监督的分类
 HSMM <- classifyCells(HSMM, cth, 0.1) ## 这个时候的HSMM已经被改变了，增加了属性(phenoData中的CellType)。
 HSMM 
 ## The function classifyCells applies each gating function to each cell, classifies the cells according to the 
@@ -482,6 +514,7 @@ HSMM
 pData(HSMM)$CellType
 table(pData(HSMM)$CellType)
 
+## 可视化细胞分类和组成：
 pie <- ggplot(pData(HSMM), aes(x = factor(1), fill = factor(CellType))) +
   geom_bar(width = 1)
 pie + coord_polar(theta = "y") +
