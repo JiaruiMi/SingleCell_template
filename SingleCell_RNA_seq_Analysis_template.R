@@ -322,6 +322,8 @@ head(HSMM_sample_sheet)
 
 
 ###################################### 构建S4对象，CellDataSet ######################################
+# 读取矩阵的推荐层级：raw counts(UMI) > relative counts (FPKM/TPM) > raw counts(without UMI)
+# 针对上述推荐层级，raw counts(UMI)在导入CellDataSet对象之前千万不要normalization或者把它变成FPKM/TPM的data(因为UMI raw counts是最优输入)。
 # 主要是读取表达矩阵和样本描述信息，这里介绍两种方式，一种是读取基于 subjunc+featureCounts 分析后的reads counts矩阵，
 # 一种是读取 tophat+cufflinks 得到的RPKM表达矩阵
 # 如何读取外部数据，请参考“https://mp.weixin.qq.com/s/zCfDkxbVTxjFQ5QAIULYjA”
@@ -339,7 +341,7 @@ dim(molecules)
 ## 这个文件是表达矩阵涉及到的所有样本的描述信息，包括样本来源于哪个细胞，以及哪个批次。
 anno <- read.table("annotation.txt", sep = "\t", header = TRUE)  # anno是phenoData，存储的是样品的信息
 dim(anno)
-rownames(anno)=colnames(molecules)  # 为了让phenoNames is the same between assayData and phenoData，必不可少
+rownames(anno)=colnames(molecules)  # 为了让phenoNames is the same between assayData and phenoData，必不可少(重要)
 
 ## 以下是为了在featureData当中增加gene_short_name一列
 library(org.Hs.eg.db)  
@@ -350,8 +352,9 @@ symbol=eg2symbol[match( egid ,eg2symbol$gene_id),'symbol']
 gene_annotation = data.frame(ensembl=rownames(molecules),   # gene_annotation是featureData，存储了基因的ensembl_id, gene_symbol和entrez_id
                              gene_short_name=symbol,
                              egid=egid)
-rownames(gene_annotation)=rownames(molecules)  # 为了让featureNames is the same between assayData and featureData，必不可少
+rownames(gene_annotation)=rownames(molecules)  # 为了让featureNames is the same between assayData and featureData，必不可少(重要)
 
+# 真正开始构建CellDataSet对象了：
 pd <- new("AnnotatedDataFrame", data = anno)
 fd <- new("AnnotatedDataFrame", data = gene_annotation)
 # tung <- newCellDataSet(as.matrix(molecules), phenoData = pd, featureData = fd)
@@ -362,7 +365,10 @@ tung <- newCellDataSet(as(as.matrix(molecules), "sparseMatrix"),
                        expressionFamily=negbinomial.size())
 
 tung
-
+## 针对expressionFamily一共有4种参数可供选择，negbinomial.size()，negbinomial()，tobit()，gaussianff()。其中第一种和第三种比较常用。
+## negbinomial()会比negbinomial.size()稍稍更加准确一点，但是运行速度慢了不少，所以不建议使用。tobit()是专门针对FPKM和RPMK的。gaussianff()
+## 是针对已经normalization后正态分布的数据。正如之前所说Monocle是不建议先normalize在构建CellDataSet对象的，而且使用这个方法，后续部分
+## Monocle feature不好使。
 
 
 # 在这里我们读取HSMMSingleCell包中的测试数据，或者使用内置数据个构建S4对象：
@@ -444,7 +450,8 @@ qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, 
 
 
 ########################################### 聚类 ###########################################
-# 根据指定基因对单细胞转录组表达矩阵进行分类
+# 根据指定基因对单细胞转录组表达矩阵进行分类(Classify cells with known marker genes)
+# leverage your knowledge of key marker genes to quickly and easily classify your cells by type:
 ## 下面这个代码只适用于这个测试数据， 主要是生物学背景知识，用MYF5基因和ANPEP基因来对细胞进行分类，可以区分Myoblast和Fibroblast。
 ## 如果是自己的数据，建议多读读paper看看如何选取合适的基因，或者干脆跳过这个代码。
 ## 根据基因名字找到其在表达矩阵的ID，这里是ENSEMBL数据库的ID（MYF5_id和ANPEP_id）
@@ -770,17 +777,30 @@ plot_genes_in_pseudotime(cds_subset, color_by="Hours")
 
 
 
-#=============================================================================================
+#==================================================================================================================
 #
-#         "Monocle2" package (Monocle 2.8.0)  Cole Trapnell online tutorial（不要轻易run）
+#              "Monocle2" package (Monocle 2.8.0)  Cole Trapnell online tutorial（不要轻易run）
 #
-#=============================================================================================
-# Monocle的历史：主要是针对单细胞转录组测序数据开发的，用来找不同细胞类型或者不同细胞状态的差异表达基因。分析起始是表达矩阵，
+#==================================================================================================================
+# Monocle的特点：
+# In many single cell studies, individual cells are executing through a gene expression program in an unsynchronized manner. 
+# In effect, each cell is a snapshot of the transcriptional program under study. 
+# Pseudotime：
+# The package Monocle provides tools for analyzing single-cell expression experiments. Monocle introduced the strategy of ordering 
+# single cells in pseudotime, placing them along a trajectory corresponding to a biological process such as cell differentiation by 
+# taking advantage of individual cell's asynchronous progression of those processes. Monocle orders cells by learning an explicit 
+# principal graph from the single cell genomics data with advanced machine learning techniques (Reversed Graph Embedding), which 
+# robustly and accurately resolves complicated biological processes.
+# Monocle was originally developed to analyze dynamic biological processes such as cell differentiation
+
+
+# Monocle的历史：主要是针对单细胞转录组测序数据开发的，用来找不同细胞类型或者不同细胞状态的差异表达基因。分析起始是表达矩阵，说的更直白一点
+# Monocle是针对动态的细胞变化，比如细胞分化，从而进行开发的。
 # 作者推荐用比较老旧的Tophat+Cufflinks流程(因为Cole Trapnell开发的)，或者RSEM, eXpress,Sailfish,等等。需要的是基于转录本的表达矩阵，
 # 我一般用subjunc+featureCounts 来获取表达矩阵。
 # 分为两个版本：1.0版发表于2014年的Nature Biotechnology，还用的是tophat+cufflinks组合来计算表达量， 就不过多介绍了。
 # 2.0版本：发表于2017年的Nature Methods，功能也不仅仅是差异分析那么简单。还包括pseudotime,clustering分析，而且还可以进行基于转录本的
-# 差异分析，其算法是BEAM (used in branch analysis) and Census (the core of relative2abs)，也单独发表了文章。
+# 差异分析，并且对与超大的数据集响应更佳，其算法是BEAM (used in branch analysis) and Census (the core of relative2abs)，也单独发表了文章。
 # 用了4个公共的数据来测试说明其软件的用法和优点。
 
 # the HSMM data set, GSE52529 (ref. 1);
@@ -811,9 +831,9 @@ library(M3Drop)
 
 # 载入表达矩阵并转化为CellDataSet对象
 # 对表达矩阵进行基于基因和样本的过滤并可视化
-# 无监督的聚类
-# pseudotime分析
-# 差异分析
+# 无监督的聚类，发现细胞的亚型
+# pseudotime分析，single-cell trajectories(细胞从一种状态向另一种状态的改变)
+# 差异分析，从而更深入理解不同的细胞亚型和细胞状态
 
 ################################ STEP 1: The CellDataSet class ################################
 # Monocle倾向于加载absolute transcript counts(from UMI experiments)，或者经过矫正后的数据(FPKM or TPM).可以接受
@@ -881,18 +901,18 @@ HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
 # Monocle is able to convert Seurat objects from the package "Seurat" and SCESets from the package "scater" into 
 # CellDataSet objects that Monocle can use. It's also worth noting that the function will also work with SCESets 
 # from "Scran". To convert from either a Seurat object or a SCESet to a CellDataSet, execute the function 
-# importCDS() as shown:
+# importCDS() as shown: Monocle可以兼容Seurat的对象，抑或是来自Scater或者Scran的对象(SingleCellExperiment),使用函数importCDS()即可解决
 
 # Where 'data_to_be_imported' can either be a Seurat object
 # or an SCESet.
 importCDS(data_to_be_imported)
 
-# We can set the parameter 'import_all' to TRUE if we'd like to
-# import all the slots from our Seurat object or SCESet.
-# (Default is FALSE or only keep minimal dataset)
+# We can set the parameter 'import_all' to TRUE if we'd like to import all the slots from our Seurat object or SingleCellExperiment.
+# (Default is FALSE or only keep minimal dataset)；因为一个对象往往有不止一个存储槽，所以可以添加参数指定转换的存储槽。默认是最小化转化的。
 importCDS(data_to_be_imported, import_all = TRUE)
 
 # Monocle can also export data from CellDataSets to the "Seurat" and "scater" packages through the function exportCDS():
+# Monocle同样也可以把数据倒入到Seurat或者Scater对象当中去。
 lung <- load_lung()
 
 # To convert to Seurat object
