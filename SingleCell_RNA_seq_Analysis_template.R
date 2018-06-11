@@ -498,8 +498,8 @@ ANPEP_id <- row.names(subset(fData(HSMM), gene_short_name == "ANPEP"))
 # classify the cells. You first initialize a new CellTypeHierarchy object, then register your gating functions 
 # within it. Once the data structure is set up, you can use it to classify all the cells in the experiment:
 
-## 首先使用newCellTypeHierarchy()进行初始
-cth <- newCellTypeHierarchy() 化
+## 首先使用newCellTypeHierarchy()进行初始化
+cth <- newCellTypeHierarchy() 
 
 ## 然后添加对细胞进行分类的内容
 cth <- addCellType(cth, "Myoblast", classify_func = function(x) { x[MYF5_id,] >= 1 })
@@ -533,35 +533,39 @@ pie + coord_polar(theta = "y") +
 
 
 ## 无监督聚类: 这里需要安装最新版R包才可以使用里面的一些函数，因为上面的步骤基于指定基因的表达量进行细胞分组会漏掉很多信息，
+## 使用无监督聚类，相当于要对一部分unknown cell进行impute，使用的函数是clusterCells()。它是基于整体的基因表达情况来帮助聚类的。
+## 比如某一些细胞缺乏MYF5，但是它们表达相当一部分myoblast特征性基因，那么仍然可以将这些细胞归类到myoblast当中去。
+## 当然设计到聚类，就一定有降维去噪声的步骤。
 ## 所以需要更好的聚类方式。在进行无监督的分类的时候，筛选高表达的HVG可以尽可能的提高信噪比
+## 首先我们挑选表达量比较高的基因
 disp_table <- dispersionTable(HSMM)
 head(disp_table)
-
 ## 只有满足条件的10198个基因才能进入聚类分析，我们使用setOrderingFilter函数来标记那部分后续用clusterCell聚类的基因；
 ## 使用plot_ordering_genes函数来图形化展示基因的表达量和离散度，高表达的基因都可以纳入考虑，红色线是在不同的平均基因
 ## 表达量下离散度的估计值。
-unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
-HSMM <- setOrderingFilter(HSMM, unsup_clustering_genes$gene_id)
-plot_ordering_genes(HSMM)
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)  
+HSMM <- setOrderingFilter(HSMM, unsup_clustering_genes$gene_id) # setOrderingFilter这一步可以将用于cluster的gene给标记出来
+plot_ordering_genes(HSMM)   # 绘制散点图(dispersion vs average expression)
 ## 这里看看基因的表达量和基因的变异度之间的关系
 ## 处在灰色阴影区域的基因会被抛弃掉，不进入聚类分析。
 
 # 聚类分析之前，首先对数据进行PCA降维和去噪，当然PCA需要对log转换后的数据进行分析
+# HSMM@auxClusteringData[["tSNE"]]$variance_explained <- NULL
 plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 6, 
                         reduction_method = 'tSNE', verbose = T) 
 HSMM <- clusterCells(HSMM, num_clusters = 2)
 ## 这里先用tSNE的聚类方法处理HSMM数据集，并可视化展示；这个函数目前有问题，尤其是加入markers这个参数
-plot_cell_clusters(HSMM, 1, 2, color_by  = 'CellType', markers = c("MYF5", "ANPEP"))
-
+plot_cell_clusters(HSMM, 1, 2, color_by  = 'CellType', markers = c("MYF5", "ANPEP"))  # Monocle默认使用tSNE来进行cluster的可视化,但是这个函数有点问题
+### 似乎去除markers = c("MYF5", "ANPEP")就正确了
 ## 可以看到并不能把细胞类型完全区分开，这个是完全有可能的，因为虽然是同一种细胞，但是有着不同的培养条件。
-head(pData(HSMM)) # 在这里另外一个问题是pdata中的Cluster，只有一个，这是不符合常理的，需要debug一下。
+head(pData(HSMM)) # 在这里另外一个问题是pdata中的Cluster，只有一个，这是不符合常理的，需要debug一下，已经在github上提问。
 head(fData(HSMM))
 ## 所以这里也区分一下 培养基， a high-mitogen growth medium (GM) to a low-mitogen differentiation medium (DM). 
 plot_cell_clusters(HSMM, 1, 2, color="Media")
 
-
-## 因为我们假设就2种细胞类型，所以在做聚类的时候可以把这个参数添加进去，这样可以去除无关变量的干扰。
+## Remove batch effect
+## 因为我们假设就2种细胞类型，所以在做聚类的时候可以把这个参数添加进去(去除medium带来的混杂因素)，这样可以去除无关变量的干扰。
 ## Monocle allows us to subtract the effects of "uninteresting" sources of variation to reduce their 
 ## impact on the clustering. You can do this with the residualModelFormulaStr argument to clusterCells 
 ## and several other Monocle functions. This argument accepts an R model formula string specifying 
@@ -570,16 +574,17 @@ HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 2, reduction_method = 
                         residualModelFormulaStr="~Media + num_genes_expressed", verbose = T) #
 HSMM <- clusterCells(HSMM, num_clusters=2)
 ## Distance cutoff calculated to 1.284778
-plot_cell_clusters(HSMM, 1, 2, color="CellType") 
+pData(HSMM)
+plot_cell_clusters(HSMM, 1, 2, color="CellType", cell_size = 4) # cell_size只能对应一个确定的数值，alpha还是不能用
 
 ## Now that we've accounted for some unwanted sources of variation, we're ready to take another crack at 
 ## classifying the cells by unsupervised clustering:
-plot_cell_clusters(HSMM, 1, 2, color="Cluster") + facet_wrap(~CellType)
-
+HSMM <- clusterCells(HSMM, num_clusters = 2)
+plot_cell_clusters(HSMM, 1, 2, color = 'Cluster') + facet_wrap(~CellType)   # pData中的Cluster存在问题，需要debug一下
 
 
 ## 半监督聚类，也就是利用一部分marker genes来进行分析。正如之前所说，如果我们只单单用一个marker来指示细胞的类型的
-## 时候，某些细胞不能很好的区分，因此我们需要用那些与指明的marker gene有相同表达差异的gene，构建一个gene list
+## 时候，某些细胞不能很好的区分，因此我们需要用那些与指明的marker gene有相同表达差异的gene(co-vary)，构建一个大的gene list
 ## 这里的差异分析非常耗时
 marker_diff <- markerDiffTable(HSMM[expressed_genes,], 
                                cth, 
@@ -610,6 +615,7 @@ HSMM <- setOrderingFilter(HSMM, semisup_clustering_genes)
 plot_ordering_genes(HSMM)
 ## 重新挑选基因，只用黑色高亮的基因来进行聚类。
 
+## 这里我们使用更少的基因（但是是特征基因，去噪非常好）来进行cluster
 plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 3, 
                         norm_method = 'log',
@@ -618,15 +624,22 @@ HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 3,
 HSMM <- clusterCells(HSMM, num_clusters=2) 
 ## Distance cutoff calculated to 1.02776
 plot_cell_clusters(HSMM, 1, 2, color="CellType")
-pData(HSMM)$CellType
 
+## 这个先不做，impute这个功能有点问题。
 ## Impute cell type，理论上这一步应该会把unknown和ambiguous的归类到myoblast或者fibroblast
+## If you provide clusterCells with a the CellTypeHierarcy, Monocle will use it classify whole clusters, rather than just individual 
+## cells. Essentially, clusterCells works exactly as before, except after the clusters are built, it counts the frequency of each cell 
+## type in each cluster. When a cluster is composed of more than a certain percentage (in this case, 10%) of a certain type, all the 
+## cells in the cluster are set to that type. If a cluster is composed of more than one cell type, the whole thing is marked "Ambiguous".
+## If there's no cell type thats above the threshold, the cluster is marked "Unknown". Thus, Monocle helps you impute the type of each 
+## cell even in the presence of missing marker data.
 HSMM <- clusterCells(HSMM,
                      num_clusters=2, 
                      frequency_thresh=0.1,
                      cell_type_hierarchy=cth)
 ## Distance cutoff calculated to 1.02776
-plot_cell_clusters(HSMM, 1, 2, color="CellType", markers = c("MYF5", "ANPEP"))
+plot_cell_clusters(HSMM, 1, 2, color_by ="CellType",markers = c("MYF5", "ANPEP"))  # 建议查看一下CellType
+table(pData(HSMM)$CellType) # CellType又出问题了，需要debug
 
 pie <- ggplot(pData(HSMM), aes(x = factor(1), fill = factor(CellType))) +
   geom_bar(width = 1)
@@ -637,11 +650,32 @@ pie + coord_polar(theta = "y") +
 # 主要目的是：Constructing Single Cell Trajectories
 
 # 发育过程中细胞状态是不断变化的，monocle包利用算法学习所有基因的表达模式来把每个细胞安排到各自的发展轨迹。 
-# 在大多数生物学过程中，参与的细胞通常不是同步发展的，只有单细胞转录组技术才能把处于该过程中各个中间状态的细胞分离开来，
-# 而monocle包里面的pseudotime分析方法正是要探究这些。
-# choose genes that define a cell’s progress
-# reduce data dimensionality
-# order cells along the trajectory
+# 在大多数生物学过程中，参与的细胞通常不是同步发展的，其中很多细胞是处在transition state。只有单细胞转录组技术才能把处于该过程中
+# 各个中间状态的细胞分离开来。Rather than purifying cells into discrete states experimentally, Monocle uses an algorithm to learn 
+# the sequence of gene expression changes each cell must go through as part of a dynamic biological process. Monocle可以把细胞都安置
+# 在这个trajectory特定的位置上面。使用Monocle的differential analysis toolkit，我们可以观察某些gene在这个trajectory上的表达变化。
+# Monocle构建trajectory的算法称为reversed graph embedding。
+
+# 什么是Pseudotime：
+# Pseudotime是衡量单个细胞通过细胞分化等过程所发生的变化的指标。在许多生物过程中，细胞不能以完美的同步化方式进行。在诸如细胞分化的过程的
+## 单细胞表达研究中，捕获的细胞可能在分化方面广泛分布于不同的阶段。也就是说，在同一时间捕获的细胞群体中，一些细胞可能远在前方，而另一些
+# 细胞甚至可能尚未开始该过程。当你想了解随着细胞从一个状态转换到另一个状态时发生的变化顺序，这种异步会产生重大问题。追踪同时捕获的细胞表达
+# 产生非常压缩的基因动力学，并且该基因表达的明显变异性将非常高。通过按照学习得到的轨迹(trajectory)的进度对每个细胞进行排序，Monocle可以缓解由于不同步
+# 导致的问题。 Monocle并不追踪基因的表达随时间变化的变化，而是追踪基因表达沿学习得到的轨迹(trajectory)进展的函数，我们称之为pseudotime。
+# pseudotime是一个抽象的进展单位：它就是沿着最短路径测量的一个细胞和轨迹开始之间的距离。轨迹的总长度是根据细胞在从起始状态移动到结束状态
+# 时经历的转录变化总量来定义的。
+
+# 在pseudotime中我们可以得到的两个重要的结果：
+# Finding Genes that Change as a Function of Pseudotime
+# Analyzing Branches in Single-Cell Trajectories
+
+# 而monocle包里面的pseudotime分析方法正是要探究这些。整个workflow分为step1， step2，step3三步
+# Step1: choose genes that define a cell’s progress: feature selection: Monocle会同时关注一些表达量很低，但是vary in interesting的非noisy genes
+#        使用这些gene来order cell
+# Step2: reduce data dimensionality of the data：数据降维方法是reversed graph embedding
+# Step3: order cells along the trajectory (in pseudotime)：我们首先将表达数据投射到一个低维的空间当中去。Monocle假定trajectory是一个树状结构，
+#        树的一端是根，另一端是叶子。Monocle的职责就是找到最佳的树型结构，这个任务称为manifold learning。一个细胞的pseudotime value是细胞
+#        travel back回去的距离。
 
 # 其中第一个步骤挑选合适的基因有3种策略，分别是：
 # Ordering based on genes that differ between clusters
@@ -649,6 +683,9 @@ pie + coord_polar(theta = "y") +
 # Ordering cells using known marker genes
 
 ###### Trajectory step 1: choose genes that define a cell's progress  
+# 核心思想是找到set of genes increase or decrease in expression as a function of process。
+# 当然我们最好不要依赖已有的知识，因为这会带来偏倚。一种方法是我们isolate在process的开始和结尾处的细胞，然后找差异表达基因
+
 
 # 无监督的Pseudotime分析, 先不要执行上方impute cell type的环节
 HSMM_myo <- HSMM[,pData(HSMM)$CellType == "Myoblast"]   
@@ -656,13 +693,18 @@ HSMM_myo <- estimateDispersions(HSMM_myo)
 ## Warning: Deprecated, use tibble::rownames_to_column() instead.
 ## Removing 143 outliers
 
-# 使用不同的策略会给出不同的fData(State)
+# 使用不同的策略会给出不同的fData(State)：先不执行策略1，而执行策略2
 ## 策略1：  Ordering based on genes that differ between clusters
 ### find all genes that are differentially expressed in response to the switch from growth medium to differentiation medium:
 ### 这是一种简单的处理方法，就是比较process最早和最晚的细胞的表达基因，作为这个基因集
 diff_test_res <- differentialGeneTest(HSMM_myo[expressed_genes,],     # 这一步比较费时
                                       fullModelFormulaStr="~Media")
 ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
+### Choosing genes based on differential analysis of time points is often highly effective, but what if we don't have time series data? 
+### If the cells are asynchronously moving through our biological process (as is usually the case), Monocle can often reconstruct their 
+### trajectory from a single population captured all at the same time. 
+
+
 ## 策略2：Selecting genes with high dispersion across cells
 disp_table <- dispersionTable(HSMM_myo)
 ordering_genes <- subset(disp_table, 
@@ -670,18 +712,19 @@ ordering_genes <- subset(disp_table,
                            dispersion_empirical >= 1 * dispersion_fit)$gene_id
 
 
-
+## 跳过策略2:Once we have a list of gene ids to be used for ordering, we need to set them in the HSMM object, because 
+## the next several functions will depend on them.
 HSMM_myo <- setOrderingFilter(HSMM_myo, ordering_genes)
 plot_ordering_genes(HSMM_myo)
 ## Warning: Transformation introduced infinite values in continuous y-axis
 
 
 ##### Trajectory step 2: reduce data dimensionality
-## 挑选变异度大的基因，如图所示
+## 挑选变异度大的基因，如图上图所示，数据降维到可以可视化(1-2维)
 HSMM_myo <- reduceDimension(HSMM_myo, max_components=2, method = 'DDRTree')
 
 
-##### Trajectory step 3: order cells along the trajectory
+##### Trajectory step 3: order cells along the trajectory：万事具备，下面就是用orderCells函数来给细胞排排序
 HSMM_myo <- orderCells(HSMM_myo)
 pData(HSMM_myo)
 ## 排序好的细胞可以直接按照发育顺序可视化
@@ -689,7 +732,8 @@ plot_cell_trajectory(HSMM_myo, color_by="Hours")
 
 plot_cell_trajectory(HSMM_myo, color_by = "State")
 
-
+## "State" is just Monocle's term for the segment of the tree. The function below is handy for identifying the State which 
+## contains most of the cells from time zero. 
 GM_state <- function(cds){
   if (length(unique(pData(cds)$State)) > 1){
     T0_counts <- table(pData(cds)$State, pData(cds)$Hours)[,"0"]
@@ -702,12 +746,18 @@ GM_state <- function(cds){
 HSMM_myo <- orderCells(HSMM_myo, root_state = GM_state(HSMM_myo))
 plot_cell_trajectory(HSMM_myo, color_by = "Pseudotime")
 
-
+## If there are a ton of states in your tree, it can be a little hard to make out where each one falls on the tree. Sometimes it 
+## can be handy to "facet" the trajectory plot so it's easier to see where each of the states are located: 分面，具体看每个state在
+## pseudotime的哪一支。
 plot_cell_trajectory(HSMM_myo, color_by = "State") +
   facet_wrap(~State, nrow = 1)
 
 
-
+## 如果你的数据不是在多个时间点采样怎么办？
+## And if you don't have a timeseries, you might need to set the root based on where certain marker genes are expressed, using your 
+## biological knowledge of the system. For example, in this experiment, a highly proliferative population of progenitor cells are 
+## generating two types of post-mitotic cells. So the root should have cells that express high levels of proliferation markers. 
+## We can use the jitter plot to pick figure out which state corresponds to rapid proliferation:
 blast_genes <- row.names(subset(fData(HSMM_myo),
                                 gene_short_name %in% c("CCNB2", "MYOD1", "MYOG")))
 plot_genes_jitter(HSMM_myo[blast_genes,],
@@ -716,7 +766,7 @@ plot_genes_jitter(HSMM_myo[blast_genes,],
 
 
 
-
+## 把gene映射到pseudotime上面，x轴是pseudotime
 HSMM_expressed_genes <-  row.names(subset(fData(HSMM_myo),
                                           num_cells_expressed >= 10))
 HSMM_filtered <- HSMM_myo[HSMM_expressed_genes,]
