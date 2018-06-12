@@ -422,7 +422,7 @@ HSMM <- estimateDispersions(HSMM)
 # 因为有可能有空的well，dead cell或者doublet的存在，会影响后续的分析，比如pseudotime。
 # 基于基因的过滤
 ##  这里只是把基因挑选出来，并没有对S4对象进行过滤操作。 这个detectGenes函数还计算了每个细胞里面表达的基因数量。有点类似于CalculateQCMetrics
-HSMM <- detectGenes(HSMM, min_expr = 0.1)  
+HSMM <- detectGenes(HSMM, min_expr = 0.1)  # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
 print(head(fData(HSMM)))    # num_cells_expressed，某个gene在多少个细胞当中有表达
 
 ## 对每个基因都检查一下在多少个细胞里面是有表达量的。
@@ -460,7 +460,7 @@ qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
 ## 上面已经根据基因表达情况以及样本的总测序数据选择好了阈值，下面就可以可视化并且对比检验一下执行过滤与否的区别。
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs > lower_bound & 
                pData(HSMM)$Total_mRNAs < upper_bound]                                 
-HSMM <- detectGenes(HSMM, min_expr = 0.1)
+HSMM <- detectGenes(HSMM, min_expr = 0.1)  # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
 HSMM
 
 # Log-transform each value in the expression matrix.
@@ -537,13 +537,19 @@ pie + coord_polar(theta = "y") +
 ## 比如某一些细胞缺乏MYF5，但是它们表达相当一部分myoblast特征性基因，那么仍然可以将这些细胞归类到myoblast当中去。
 ## 当然设计到聚类，就一定有降维去噪声的步骤。
 ## 所以需要更好的聚类方式。在进行无监督的分类的时候，筛选高表达的HVG可以尽可能的提高信噪比
-## 首先我们挑选表达量比较高的基因
-disp_table <- dispersionTable(HSMM)
+## 首先我们挑选表达量比较高的基因:
+## The first step is determining a subset of genes to use for clustering; this is because not all genes are informative, such as those 
+## that are lowly expressed. The approach is to select gene based on their average expression and variability across cells. 
+## The dispersionTable() function calculates the mean and dispersion values.
+disp_table <- dispersionTable(HSMM)   # dispersionTable()计算平均值和散度
 head(disp_table)
 ## 只有满足条件的10198个基因才能进入聚类分析，我们使用setOrderingFilter函数来标记那部分后续用clusterCell聚类的基因；
 ## 使用plot_ordering_genes函数来图形化展示基因的表达量和离散度，高表达的基因都可以纳入考虑，红色线是在不同的平均基因
 ## 表达量下离散度的估计值。
-unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)  
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)  # We will select genes, which have a mean expression >= 0.1, to use in the clustering step.
+table(disp_table$mean_expression>=0.1) # 显示True的那部分是用来clustering的gene
+ 
+## setOrderingFilter() function allows us to indicate which genes we want to use for clustering.
 HSMM <- setOrderingFilter(HSMM, unsup_clustering_genes$gene_id) # setOrderingFilter这一步可以将用于cluster的gene给标记出来
 plot_ordering_genes(HSMM)   # 绘制散点图(dispersion vs average expression)
 ## 这里看看基因的表达量和基因的变异度之间的关系
@@ -551,8 +557,8 @@ plot_ordering_genes(HSMM)   # 绘制散点图(dispersion vs average expression)
 
 # 聚类分析之前，首先对数据进行PCA降维和去噪，当然PCA需要对log转换后的数据进行分析
 # HSMM@auxClusteringData[["tSNE"]]$variance_explained <- NULL
-plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
-HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 6, 
+plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log', 这一步往往比较耗时。
+HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 6,     # num_dim参数决定我们要纳入几个PC，如果不指定的话，默认值是50个PC
                         reduction_method = 'tSNE', verbose = T) 
 HSMM <- clusterCells(HSMM, num_clusters = 2)
 ## 这里先用tSNE的聚类方法处理HSMM数据集，并可视化展示；这个函数目前有问题，尤其是加入markers这个参数
@@ -762,7 +768,7 @@ blast_genes <- row.names(subset(fData(HSMM_myo),
                                 gene_short_name %in% c("CCNB2", "MYOD1", "MYOG")))
 plot_genes_jitter(HSMM_myo[blast_genes,],
                   grouping = "State",
-                  min_expr = 0.1)
+                  min_expr = 0.1) # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
 
 
 
@@ -779,7 +785,7 @@ plot_genes_in_pseudotime(cds_subset, color_by = "Hours")
 ##### Alternative choices for ordering genes -- for STEP 3 --Ordering based on genes that differ between clusters
 ## Ordering based on genes that differ between clusters(筛选gene用于order cell，我们选用dpFeature)
 ## dpFeature的第一步是选择那些至少在5%的细胞当中有表达的gene
-HSMM_myo <- detectGenes(HSMM_myo, min_expr = 0.1)
+HSMM_myo <- detectGenes(HSMM_myo, min_expr = 0.1) # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
 fData(HSMM_myo)$use_for_ordering <-
   fData(HSMM_myo)$num_cells_expressed > 0.05 * ncol(HSMM_myo)  # 这个5%好像有点太小了
 
@@ -794,6 +800,8 @@ HSMM_myo <- reduceDimension(HSMM_myo,
                             reduction_method = 'tSNE',
                             verbose = T)
 
+## This time without specifying the number of clusters; we will use thresholds on the cell’s local density (rho) and nearest distance 
+## (delta) to determine the number of clusters.即此处不指定cluster数，而是通过p和delta来计算cluster
 ## 使用density peak clustering来发现二维空间中的tSNE，这个density peak算法是基于每个细胞周围的密度p和到距离较远的细胞的最短距离delta来决定的
 ## (不就是tSNE的算法核心么)，我们需要设定p和delta的阈值，来定义哪些细胞处在比较高的密度以内和距离范围以外。默认的clusterCell选择95%的p和
 ## delta来定义阈值。我们还可以定义cluster的数量。默认参数往往就挺好使的了。
@@ -1143,6 +1151,386 @@ lung_SCESet <- exportCDS(lung, 'Scater')
 HSMM <- estimateSizeFactors(HSMM)
 HSMM <- estimateDispersions(HSMM)
 
+
+
+
+#===============================================================================================================
+#
+#                        "Monocle2" package (Monocle 2.8.0)  Dave Tang's Analysis
+#
+#===============================================================================================================
+
+########################################### 读入数据，构建CellDataSet对象 ######################################
+
+setwd('/Users/mijiarui/Monocle')
+library(monocle)
+library(cellrangerRkit)
+packageVersion("cellrangerRkit")
+getwd()
+
+# 注意，根据Dave Tang的博客，我们需要建立一个叫pbmc8k的文件夹，再建立一个叫outs的子文件夹，然后把tar的内容存放进去，这样load_cellranger_matrix
+# 才能读取
+my_dir <- "/Users/mijiarui/Monocle/pbmc8k"
+# load data
+gbm <- load_cellranger_matrix(my_dir)
+class(gbm)  # 这个对象也是基于ExpressionSet来进行开发的，所以可以使用exprs(), pData()和fData()来读取对象中的内容  
+
+# check out the expression data using exprs()
+# 33,694 genes across 8,381 single cells
+dim(exprs(gbm))
+exprs(gbm)[1:5, 1:5]   # 可以看出CellRanger的矩阵输出默认是稀疏矩阵sparse matrix
+
+# check out the phenotypic data
+dim(pData(gbm))
+
+# check out the feature information
+dim(fData(gbm))
+## this table will be useful for matching gene IDs to symbols
+head(fData(gbm))
+
+## 正式构建CellDataSet对象，注意Monocle expects that the gene symbol column in the feature data is called gene_short_name 
+## or else you will get a warning. 所以现对fData进行少许微调：
+
+# rename gene symbol column
+my_feat <- fData(gbm)
+names(my_feat) <- c('id', 'gene_short_name')
+
+# no warning
+my_cds <- newCellDataSet(exprs(gbm),
+                         phenoData = new("AnnotatedDataFrame", data = pData(gbm)),
+                         featureData = new("AnnotatedDataFrame", data = my_feat),
+                         lowerDetectionLimit = 0.5,
+                         expressionFamily = negbinomial.size())
+
+my_cds
+# see ?CellDataSet for more information
+slotNames(my_cds)
+
+########################################### Normalization and QC ######################################
+# 计算 normalisation and variance estimation两步，这对后续差异基因的分析是必不可少的。可能会比较耗时。
+my_cds <- estimateSizeFactors(my_cds)
+my_cds <- estimateDispersions(my_cds)
+
+## exploratory data analysis
+### detectGenes()函数会帮助我们计算一个gene在多少个细胞中表达，和一个细胞表达多少个gene，分别添加到fData和pData当中去
+my_cds <- detectGenes(my_cds, min_expr = 0.1) # 只要有1个counts就会被认作这个gene是表达的，因为我们这边设定的最小识别阈值是0.1
+head(fData(my_cds))
+summary(fData(my_cds)$num_cells_expressed)
+
+### The num_cells_expressed column is a tally of the number of cells expressing a particular gene (a gene is “expressed” if there is at 
+### least one count since we set min_expr = 0.1). For example if we tally ENSG00000239945 across all cells, we should get 1, as indicated 
+### in the table above.
+sum((exprs(my_cds['ENSG00000239945',])))
+sum((exprs(my_cds['ENSG00000238009',])))
+
+### The number of genes expressed (num_genes_expressed) per cell is stored in phenoData. Note that if a gene has 10 UMIs or 1 UMI, 
+### it is still tallied as 1.
+head(pData(my_cds))
+# sanity check for AAACCTGAGCATCATC-1
+sum((exprs(my_cds)[,"AAACCTGAGCATCATC-1"])>0)
+summary(pData(my_cds)$num_genes_expressed)
+# standardise to Z-distribution
+x <- pData(my_cds)$num_genes_expressed
+x_1 <- (x - mean(x)) / sd(x)
+summary(x_1)
+
+### Histogram of genes detected for cells
+library(ggplot2)
+library(cowplot) # # I like the default theme of cowplot
+df <- data.frame(x = x_1)
+ggplot(df, aes(x)) +       # Only a few cells have an abnormal number of expressed genes, such as the ones that are 5 standard deviations away from the mean.
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = c(-2, 2), linetype = "dotted", color = 'red')
+
+### We can also add our own metadata, such as the UMI count, to the phenoData.
+# add a UMI column into phenoData
+# use Matrix because data is in the sparse format
+pData(my_cds)$UMI <- Matrix::colSums(exprs(my_cds))
+head(pData(my_cds))
+ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()  # 我们可以滤除那些有很高UMI/gene的细胞，因为它们有可能是doublet
+
+####################################### Clustering cells without marker genes #######################################
+# However, since I don’t know of any specific markers for this dataset I will use the unsupervised approach. The first step is 
+# determining a subset of genes to use for clustering; this is because not all genes are informative, such as those that are lowly 
+# expressed. The approach is to select gene based on their average expression and variability across cells. The dispersionTable() 
+# function calculates the mean and dispersion values (for each gene).
+disp_table <- dispersionTable(my_cds)
+head(disp_table)
+
+## We will select genes, which have a mean expression >= 0.1, to use in the clustering step. The setOrderingFilter() function allows us 
+## to indicate which genes we want to use for clustering. The plot_ordering_genes() function plots mean expression against the empirical 
+## dispersion and highlights the set of genes (as black dots) that will be used for clustering.
+table(disp_table$mean_expression>=0.1) # 我们的筛选标准是mean expression >= 0.1，我们先来看一下统计结果
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
+
+my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id)
+plot_ordering_genes(my_cds)
+
+## It will take a lot of computational time to cluster 8,381 cells even when we have subsetted the total number of genes down to 4,012. 
+## The usual approach is to perform dimension reduction (typically Principal Component Analysis [PCA]) and use the principal components 
+## that explain the majority of the variance in the data. The plot_pc_variance_explained() function plots the percentage of variance 
+## explained by each component based on a PCA performed on the normalised expression data. From the plot we can decide the number of 
+## components to use in our downstream analyses.
+plot_pc_variance_explained(my_cds, return_all = FALSE)   
+### 这一步比较耗时，The goal is to identify the elbow in this plot, which can be a bit subjective.
+### The warning message is from the irlba() function, which was used to perform the PCA. The “results might be invalid [sic]” warning is 
+### a bit worrying though, so I’m not sure whether or not the plot is valid. I’ll perform dimension reduction using five and ten principal 
+### components (by setting the num_dim parameter, which is used as input to the prcomp_irlba() function) and compare the clustering results.
+
+## 开始进行聚类，使用clusterCells()函数
+## The clusterCells() function performs the clustering on a CellDataSet; however, you need to input the number of requested clusters. 
+## The results of the clustering are stored in the phenoData table. 作者在这边arbitrarily 选择了15个cluster
+
+## 我们先看看使用5个PC的结果
+# if num_dim is not set, the default is set to 50
+# I'll use 5 here based on plot_pc_variance_explained，我们只选择前5的PC进行降维去噪。
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 5,         # 这一步比较耗时
+                          reduction_method = 'tSNE', verbose = TRUE)
+
+# perform unsupervised clustering requesting 15-1 clusters，我们最高选取15个cluster，计算机会从1-15进行计算，找到当中cluster数最合理的
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+
+# cluster information is in the Cluster column，存储在pData当中 
+head(pData(my_cds))
+
+# store cluster info for comparing later
+my_cluster_dim_5 <- pData(my_cds)$Cluster
+
+# Visualization可视化
+plot_cell_clusters(my_cds)
+
+## 我们再看看使用10个PC的结果
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 10,
+                          reduction_method = 'tSNE', verbose = TRUE)
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_cluster_dim_10 <- pData(my_cds)$Cluster
+plot_cell_clusters(my_cds)
+
+## 怎样评估选取多少个PC比较合理呢：We’ll use the Adjusted Rand Index (ARI) to compare the clustering results. The adjustedRand() function 
+## in the 'clues' package calculates the Rand Index (RI) and different variations of the ARI (HA, MA, and FM).
+library(clues)
+adjustedRand(as.numeric(my_cluster_dim_5), as.numeric(my_cluster_dim_10))
+### The ARI (HA) suggests that the clustering of cells is quite different when including different numbers of principal components. 
+### I also compared clustering results with num_dim = 4 and num_dim = 5 and while the ARI is higher than the comparison between 
+### num_dim = 5 and num_dim = 10, it still implies that the cell clusters are quite different.
+
+# For the rest of the analysis, I will be using num_dim = 10 and num_clusters = 15. 为了方便可重复性，我们选择PC是10个，最多cluster是15个
+# include 10 dimensions
+
+
+############################################### Differential expression ##############################################
+# One of the main interests of single cell transcriptomics is the identification of novel markers for cell types. We can use 
+# differentialGeneTest(), which is quite a flexible function, to find marker genes by assessing each gene’s expression level across the 
+# cells. The model formulae used in the function can use any column in the phenoData table, including columns that we manually add.
+# marker gene的筛选可以针对任何pData当中的column，类似于time，medium或者很多其它自己加入的属性  。
+
+# I’ll create a vector that indicates whether a single was clustered in “Cluster 1” or not to identify genes differentially expressed in 
+# cluster 1 versus the other clusters.
+
+# create vector of no's
+my_vector <- rep('no', nrow(pData(my_cds)))
+
+# change status to yes if the cell was in cluster 1
+table(pData(my_cds)$Cluster) # 我们看到一共有14个cluster, 其中cluster1的有1135个
+my_vector[pData(my_cds)$Cluster == 1] <- rep('yes', sum(pData(my_cds)$Cluster == 1))
+table(my_vector)
+
+# add vector to phenoData
+pData(my_cds)$test <- my_vector
+head(pData(my_cds))
+
+# I’ll perform the differential expression analysis on the subset of genes where the mean expression (across cells) was >= 0.1
+length(unsup_clustering_genes$gene_id)  # 之前挑选出来用于cluster的gene(平均表达量大于0.1），共4012个
+de_cluster_one <- differentialGeneTest(my_cds[unsup_clustering_genes$gene_id,],
+                                      fullModelFormulaStr = '~test',
+                                      cores = 8)
+dim(de_cluster_one)
+
+# order by q-value
+library(dplyr)
+de_cluster_one %>% arrange(qval) %>% head()
+
+# Let’s check out CTSS (ENSG00000163131), which is the most statistically significant gene, using plot_genes_fitter().
+plot_genes_jitter(my_cds['ENSG00000163131',], grouping = "Cluster")
+## CTSS is specific for cluster 1 but also for clusters 4 and 6. We count data hence the expression is on a discrete scale.
+
+# We can use plot_cell_clusters() to highlight clusters 1, 4, and 6.
+# add another column to the phenotypic data
+# where TRUE means cluster membership in clusters 1, 4, or 6
+pData(my_cds)$my_colour <- pData(my_cds)$Cluster == 1 | pData(my_cds)$Cluster == 4 | pData(my_cds)$Cluster == 6
+table(pData(my_cds)$my_colour)
+plot_cell_clusters(my_cds, color_by = 'my_colour')  # CTSS is overexpressed in clusters 1, 4, and 6, which are highlighted in turquoise.
+
+
+############################################### Constructing Single Cell Trajectories ###############################################
+# The “unit” used for the trajectory is pseudotime; a cell at the beginning of the trajectory, i.e. starting state, will have a lower 
+# pseudotime than cells at the end of the trajectory, i.e. end state.
+# The trajectory analysis consists of three stages:
+
+# STEP1: Choose genes that define progress
+# STEP2: Reduce the dimensionality of the data
+# STEP3: Order cells in pseudotime
+
+# For the trajectory analysis in this post, I will use only a subset of all cells (cluster 1, 4, and 6) and genes that are expressed in 
+# at least 10 cells. 为了方便计算，Dave只筛选了在cluster1,4,6中的细胞，并且只纳入在大于等于10个细胞以上有表达的基因进行分析。
+expressed_genes <- row.names(subset(fData(my_cds), num_cells_expressed >= 10))
+
+# my_colour is TRUE if a cell belongs to either cluster 1, 4, or 6
+my_cds_subset <- my_cds[expressed_genes, pData(my_cds)$my_colour]
+
+# 15,446 genes and 2,060 cells
+my_cds_subset
+
+## We’ll use the recommended approach of ordering based on genes that differ between clusters. First, we’ll perform another subset of 
+## genes, keeping only genes expressed in greater than 5% of cells. 进一步筛选在5%以上的细胞有表达的gene
+my_cds_subset <- detectGenes(my_cds_subset, min_expr = 0.1)
+fData(my_cds_subset)$use_for_ordering <- fData(my_cds_subset)$num_cells_expressed > 0.05 * ncol(my_cds_subset)
+
+# how many genes are used?
+table(fData(my_cds_subset)$use_for_ordering)
+
+# PCA分析，并描绘碎石图，人为判断有多少个PC可以纳入后续的分析
+plot_pc_variance_explained(my_cds_subset, return_all = FALSE)   # 耗时
+## There’s the same warning message as before when running plot_pc_variance_explained(), so I’ll just use num_dim = 10 and perform 
+## clustering as before (see section “Clustering cells without marker genes”) but this time without specifying the number of clusters; 
+## we will use thresholds on the cell’s local density (rho) and nearest distance (delta) to determine the number of clusters. 
+## 在这次更新之后（2.8.0，作者的版本是2.4.0），并没有出现warning message，在这里作者选择了10个PC。但是这次我们并不指定cluster的数目，而是
+## 指定细胞局部的density(rho)和nearest distance(delta)来确定cluster的数目。
+my_cds_subset <- reduceDimension(my_cds_subset,        # 耗时
+                                 max_components = 2,
+                                 norm_method = 'log',
+                                 num_dim = 10,
+                                 reduction_method = 'tSNE',
+                                 verbose = TRUE)
+my_cds_subset <- clusterCells(my_cds_subset, verbose = FALSE)
+plot_rho_delta(my_cds_subset, rho_threshold = 2, delta_threshold = 10)   # Scatter plot of rho versus delta.
+
+# We’ll use rho = 2 and delta = 10 to cluster the cells again.
+my_cds_subset <- clusterCells(my_cds_subset,
+                              rho_threshold = 2,
+                              delta_threshold = 10,
+                              skip_rho_sigma = T,     # 别再计算rho和delta了
+                              verbose = FALSE)
+table(pData(my_cds_subset)$Cluster)
+plot_cell_clusters(my_cds_subset)
+
+# Now we’ll perform the differential gene expression analysis as before but across all cell clusters.
+clustering_DEG_genes <- differentialGeneTest(my_cds_subset,
+                                             fullModelFormulaStr = '~Cluster',
+                                             cores = 8)
+dim(clustering_DEG_genes)
+clustering_DEG_genes %>% arrange(qval) %>% head()
+
+## We’ll use the top 1,000 most significantly differentially expressed genes as the set of ordering genes and perform the dimension 
+## reduction and the trajectory analysis (using the orderCells() function).
+my_ordering_genes <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
+my_cds_subset <- setOrderingFilter(my_cds_subset, ordering_genes = my_ordering_genes)
+my_cds_subset <- reduceDimension(my_cds_subset, method = 'DDRTree')  # 耗时
+
+# the warnings were for use of deprecated code
+my_cds_subset <- orderCells(my_cds_subset)
+
+plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
+
+################################### Finding Genes that Change as a Function of Pseudotime ###################################
+# Once we have a trajectory, we can use differentialGeneTest() to find genes that have an expression pattern that varies according 
+# to pseudotime. 也就是说trajectory构建好了以后，就可以看每个gene在trajectory上的分布了，使用的是differentialGeneTest()函数
+
+# pseudotime is now a column in the phenotypic data as well as the cell state
+head(pData(my_cds_subset))
+
+my_pseudotime_de <- differentialGeneTest(my_cds_subset,
+                                         fullModelFormulaStr = "~sm.ns(Pseudotime)",
+                                         cores = 8)
+my_pseudotime_de %>% arrange(qval) %>% head()
+
+# save the top 6 genes(因为我这边用了head函数); 不是很理解这段代码，尤其是为啥select函数无法正确在dplyr包中使用
+a <- my_pseudotime_de %>% arrange(qval) %>% head()
+a[,'id'] -> my_pseudotime_gene
+my_pseudotime_gene <- my_pseudotime_gene$id  # 会报错，但是不影响后面运行
+plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])
+
+
+################################### Clustering Genes by Pseudotemporal Expression Pattern ###################################
+# 说白了就是根据pseudotime的结果，对gene进行cluster
+# Monocle provides functionality for clustering genes according to their pseudotime value. The clustering analysis and plotting are 
+# done in one step using the plot_pseudotime_heatmap() function; to save the clustering results, use return_heatmap = TRUE.
+# cluster the top 50 genes that vary as a function of pseudotime
+b <- my_pseudotime_de %>% arrange(qval) %>% head(50)
+b[,'id']-> gene_to_cluster
+gene_to_cluster <- gene_to_cluster$id  # 会报错，但是不影响后面运行
+
+my_pseudotime_cluster <- plot_pseudotime_heatmap(my_cds_subset[gene_to_cluster,],
+                                                 num_clusters = 3,
+                                                 cores = 8,
+                                                 show_rownames = TRUE,
+                                                 return_heatmap = TRUE)
+
+# The columns of the heatmap are pseudotime values binned into 100 bins. Here’s the source code:
+newdata <- data.frame(Pseudotime = seq(min(pData(my_cds_subset)$Pseudotime), 
+                                       max(pData(my_cds_subset)$Pseudotime), length.out = 100))
+# Since we saved the results in my_pseudotime_cluster, we can extract the genes for each cluster.
+# hierarchical clustering was used to cluster the genes
+# we can cut the dendrogram to form the same 3 clusters as plot_pseudotime_heatmap
+my_cluster <- cutree(my_pseudotime_cluster$tree_row, 3)
+
+# genes in cluster 1
+my_pseudotime_de[names(my_cluster[my_cluster == 1]),"gene_short_name"]
+
+# genes in cluster 2
+my_pseudotime_de[names(my_cluster[my_cluster == 2]),"gene_short_name"]
+
+# genes in cluster 3
+my_pseudotime_de[names(my_cluster[my_cluster == 3]),"gene_short_name"]
+
+
+################################### Analyzing Branches in Single-Cell Trajectories ###################################
+# In our trajectory, we have two branches, which represents cells that have alternative gene expression patterns. These represent cells 
+# that have supposedly gone through different developmental paths. Monocle provides functions that allows you to identify the genes that 
+# differ at a particular branch point. Here is the trajectory again.
+plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
+
+# The BEAM() function takes a CellDataSet that has been ordered with orderCells() and a branch point in the trajectory. A table of genes 
+# is returned with significance values that indicate whether genes have expression patterns that are branch dependent.
+# warnings not shown
+BEAM_res <- BEAM(my_cds_subset, branch_point = 1, cores = 8)
+BEAM_res <- BEAM_res[order(BEAM_res$qval),]
+BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
+
+# check out the results
+head(BEAM_res)
+
+table(BEAM_res$qval < 1e-4)
+
+my_branched_heatmap <- plot_genes_branched_heatmap(my_cds_subset[row.names(subset(BEAM_res, qval < 1e-4)),],
+                                                   branch_point = 1,
+                                                   num_clusters = 4,
+                                                   cores = 8,
+                                                   use_gene_short_name = TRUE,
+                                                   show_rownames = TRUE,
+                                                   return_heatmap = TRUE)
+## The heatmap shows how some genes are over-expressed or under-expressed depending on the trajectory path.
+
+# We can return genes that belong to specific clusters that were identified by BEAM().
+head(my_branched_heatmap$annotation_row)
+dim(my_branched_heatmap$annotation_row)
+table(my_branched_heatmap$annotation_row$Cluster)
+
+my_row <- my_branched_heatmap$annotation_row
+my_row <- data.frame(cluster = my_row$Cluster,
+                     gene = row.names(my_row),
+                     stringsAsFactors = FALSE)
+
+head(my_row[my_row$cluster == 3,'gene'])
+
+my_gene <- row.names(subset(fData(my_cds_subset),
+                            gene_short_name %in% head(my_row[my_row$cluster == 3,'gene'])))
+
+# plot genes that are expressed in a branch dependent manner
+plot_genes_branched_pseudotime(my_cds_subset[my_gene,],
+                               branch_point = 1,
+                               ncol = 1)
+## The trend lines show the expression pattern of genes along the paths formed by branch point 1.
 
 
 #=============================================================================================
