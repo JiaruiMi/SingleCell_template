@@ -1538,6 +1538,17 @@ plot_genes_branched_pseudotime(my_cds_subset[my_gene,],
 #         "Monocle2" package (Monocle 2.8.0)  Olsson Dataset Analysis
 #
 #=============================================================================================
+## 研究背景：
+## In this tutorial, we demonstrate how to use reversed graph embedding (RGE) in Monocle 2 to resolve the complicated haematopoiesis process 
+## which involves that contains two major branch points. In regards to the branch points, HSC bifurcates into either megakaryote/erythroid 
+## progenitor (MEP) or granulocyte/monocyte progenitor (GMP) and the bifurcation from GMP into either granulocyte and monocyte progenitor. 
+## The reconstructed developmental trajectory is learned in four dimensions but can be visualized in two dimensions. With the trajectory 
+## learned, we are able to identify genes showing a significant bifurcation pattern during each lineage bifurcation through BEAM. 
+## We also provided a multi-way heatmap and multi-way kinetic curves to visualize important marker genes over the differentiation process. 
+## Some additional analyses are included, which are used for the tutorial on analyzing the Paul dataset.
+
+
+
 ################################### 第一步，设定全局参数，加载包 ###################################
 ## turn warnings off by executing 'options(warn = -1)'
 ## execute helper function to identify the root cell
@@ -1567,19 +1578,20 @@ suppressMessages(library(netbiov))
 setwd('/Users/mijiarui/Nature_Biotechnology_Paper/simpleSingleCell/monocle2-rge-paper/Supplementary_scripts/Jupyter_notebooks')
 hta_exprs <- read.csv("./Olsson_RSEM_SingleCellRNASeq.csv",row.names=1)
 sample_sheet <- data.frame(groups = str_split_fixed(colnames(hta_exprs), "\\.+", 3), row.names = colnames(hta_exprs))
-## 在这里正则表达式将行名根据"."号进行分割，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
+## 在这里正则表达式将列名根据"."号进行分割，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
 str_split_fixed(colnames(hta_exprs), "\\.+", 3)
 head(sample_sheet)
+tail(sample_sheet)
 gene_ann <- data.frame(gene_short_name = row.names(hta_exprs), row.names = row.names(hta_exprs)) # 在构建fd的时候必须要有gene_short_name这一列
 pd <- new("AnnotatedDataFrame",data=sample_sheet)
 fd <- new("AnnotatedDataFrame",data=gene_ann)
 
-tpm_mat <- hta_exprs # 讲读入的表达矩阵进行手工的TPM矫正，按照一列(一个样本/细胞)矫正，然后乘以1e6
+tpm_mat <- hta_exprs # 将读入的表达矩阵进行手工的CPM矫正，按照一列(一个样本/细胞)矫正，然后乘以1e6
 tpm_mat <- apply(tpm_mat, 2, function(x) x / sum(x) * 1e6)
 
-# 表达矩阵，样本注释和基因注释数据准备就绪，就可以构建CellDataSet(CDS)对象了，使用newCellDataSet函数
+# 表达矩阵，样本注释和基因注释数据准备就绪，就可以构建CellDataSet(CDS)对象了，使用newCellDataSet函数，一开始构建的对象输入的是矫正后的数值
 URMM_all_std <- newCellDataSet(as.matrix(tpm_mat),phenoData = pd,featureData =fd,
-                               expressionFamily = negbinomial.size(),
+                               expressionFamily = tobit(),  # 没理解为什么用negbinomial.size()
                                lowerDetectionLimit=1)
 
 # set up the experimental type for each cell，建议在每部执行之前查看pData(URMM_all_std)所包含的内容，说白了，这边根据实验的设计
@@ -1589,7 +1601,9 @@ pData(URMM_all_std)[, 'Type'] <- as.character(pData(URMM_all_std)[, 'groups.1'])
 pData(URMM_all_std)
 pData(URMM_all_std)[453:593, 'Type'] <- paste(as.character(pData(URMM_all_std)[453:593, 'groups.1']), '_knockout', sep = '') #KO cells
 pData(URMM_all_std)
-pData(URMM_all_std)[594:640, 'Type'] <- paste(pData(URMM_all_std)[594:640, 'groups.1'], pData(URMM_all_std)[594:640, 'groups.2'], 'knockout', sep = '_') #double KO cells
+pData(URMM_all_std)[594:640, 'Type'] <- paste(pData(URMM_all_std)[594:640, 'groups.1'], 
+                                              pData(URMM_all_std)[594:640, 'groups.2'], 'knockout', sep = '_') #double KO cells
+table(pData(URMM_all_std)$Type)
 
 # 将FPKM/TPM这些矫正表达量转换成绝对数值RPC(mRNA per cell)是建议这么做的，采用的算法叫做census，建议将FPKM/TPM转换成RPC，这一步
 # 在构建CellDataSet之前完成
@@ -1597,6 +1611,7 @@ pData(URMM_all_std)[594:640, 'Type'] <- paste(pData(URMM_all_std)[594:640, 'grou
 # if you have FPKM/TPM data, you can still use negative binomial if you first convert your relative expression values to 
 # transcript counts using relative2abs(). This often leads to much more accurate results than using tobit()
 URMM_all_abs_list <- relative2abs(URMM_all_std, t_estimate = estimate_t(URMM_all_std), return_all = T, method = 'num_genes') # convert to RPC
+str(URMM_all_abs_list)
 URMM_all_abs <- newCellDataSet(as(URMM_all_abs_list$norm_cds, 'sparseMatrix'),               # 构建CDS, 表达矩阵是RPC
                                phenoData = new("AnnotatedDataFrame",data=pData(URMM_all_std)),
                                featureData = new("AnnotatedDataFrame",data=fData(URMM_all_std)),
@@ -1691,6 +1706,11 @@ suppressMessages(URMM_all_fig1b <- estimateDispersions(URMM_all_fig1b))
 ##        是从细胞的位置返回到根的距离。
 
 
+# Running dpFeature for selecting ordering gene
+## use clustering genes from the original paper to cluster cells
+## cluster cells into five groups and select top 1000 genes as the ordering genes
+
+
 #1. set ordering genes for the fig1b，将这部分gene赋值给一个对象，后续的很多分析都是要基于这个对象的。
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = row.names(fig1b))
 plot_ordering_genes(URMM_all_fig1b)
@@ -1711,10 +1731,8 @@ URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, max_components=2, norm_method 
 ## thresholds as the density peaks. Those peaks are then used to define the clusters for all cells. By default, clusterCells 
 ## choose 95% of Ρ and Δ to define the thresholds. We can also set a number of clusters (n) we want to cluster. In this 
 ## setting, we will find the top n cells with high Δ with Δ among the top 50% range. The default setting often gives good 
-## clustering.
+## clustering. 根据之前的提示和要求，将细胞分成5个cluster
 URMM_all_fig1b <- clusterCells(URMM_all_fig1b, verbose = F, num_clusters = 5)
-### 这一步比较tricky，我们知道这个clustering需要涉及rho和delta两个参数，可以认为设定，比如：
-### rho_threshold = 2, delta_threshold = 4, skip_rho_sigma = T；其中(skip_rho_sigma = T) which enables us to skip the calculation of the Ρ, Σ.
 
 #4. check the clusters，图形化展示聚类结果
 options(repr.plot.width=4, repr.plot.height=3)
@@ -1732,12 +1750,13 @@ URMM_clustering_DEG_genes
 
 # 然后我们取所有基因来作为trajectory的ordering genes. use all DEG gene from the clusters
 URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)]
-## 下面几句代码有试验一下
+## 下面几句代码有试验一下，选择前1000个为ordering gene
 URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)][1:1000]
 
 
 
 ########################################## 第五步，在野生型细胞中重构发育的trajectory ##########################################
+# use the feature genes selected above to reconstruct the developmental trajectory
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = c(URMM_ordering_genes))
 URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, verbose = F, scaling = T, max_components = 4, 
                                   maxIter = 100, norm_method = 'log',  lambda = 20 * ncol(URMM_all_fig1b)) 
@@ -1751,10 +1770,13 @@ plot_cell_trajectory(URMM_all_fig1b, color_by = 'cluster', x = 1, y = 3) + facet
 
 
 ########################################## 第六步，在所有细胞中重构发育的trajectory ##########################################
+# use the same set of genes for the WT cells to reconstruct the developmental trajectory
+# In agreement to the graphs shown above, two branch points are discovered
 pData(URMM_all_abs)[colnames(URMM_all_fig1b), 'paper_cluster'] <- as.character(pData(URMM_all_fig1b)[, 'cluster'])
 
 URMM_all_abs <- setOrderingFilter(URMM_all_abs, ordering_genes = URMM_ordering_genes)
-URMM_all_abs <- reduceDimension(URMM_all_abs, verbose = F, scaling = T, maxIter = 100, norm_method = 'log', max_components = 4, param.gamma = 100, lambda = 14 * ncol(URMM_all_fig1b)) 
+URMM_all_abs <- reduceDimension(URMM_all_abs, verbose = F, scaling = T, maxIter = 100, norm_method = 'log', max_components = 4, 
+                                param.gamma = 100, lambda = 14 * ncol(URMM_all_fig1b)) 
 URMM_all_abs <- orderCells(URMM_all_abs)
 options(repr.plot.width=6, repr.plot.height=5)
 plot_cell_trajectory(URMM_all_abs, color_by = 'Type')
@@ -1767,23 +1789,29 @@ plot_cell_trajectory(URMM_all_abs, color_by = 'Type') + facet_wrap(~paper_cluste
 ## Trajectories are reconstructed in 4 dimensions but can be visualized as a tree layout in two dimensions
 ## both the WT and full dataset include the similar branch points
 ## 根据细胞的种类和cluster赋予其相应的颜色，用于图形化展示。
+### 所有细胞当中，根据type这个变量
+table(pData(URMM_all_abs)$Type)  # Type这个分类变量下一共有9个因子
 type_vec <- unique(pData(URMM_all_abs)$Type)
 type_cols <- RColorBrewer::brewer.pal(9, name = 'Set1')
 type_cols[6] <- "#6A3D9A"
 names(type_cols) <- type_vec
 
+### 野生型细胞当中，根据cluster这个变量
+table(pData(URMM_all_fig1b)$cluster) # cluster这个分类变量下一共9个因子
 cluster_vec <- unique(pData(URMM_all_fig1b)$cluster)
 cluster_cols <- type_cols
-cluster_cols[10] <- "#0600FC"
+cluster_cols[10] <- "#0600FC"   # 不懂这一步是干嘛的
 names(cluster_cols) <- cluster_vec
 
-## 绘图：一步法，传入表达矩阵即可
+## 绘图：一步法，传入表达矩阵即可 (结果与tutorial不一样)
 options(repr.plot.width=6, repr.plot.height=4)
-plot_complex_cell_trajectory(URMM_all_fig1b[, ], color_by = 'cluster', show_branch_points = T, cell_size = 0.5, cell_link_size = 0.3) + facet_wrap(~Type, nrow = 1) + scale_size(range = c(0.2, 0.2)) +
+plot_complex_cell_trajectory(URMM_all_fig1b[, ], color_by = 'cluster', show_branch_points = T, cell_size = 0.5, cell_link_size = 0.3) + 
+  facet_wrap(~Type, nrow = 1) + scale_size(range = c(0.2, 0.2)) +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) + scale_color_manual(values = cluster_cols, name = "cluster")
 
 options(repr.plot.width=6, repr.plot.height=5)
-plot_complex_cell_trajectory(URMM_all_abs[, ], color_by = 'paper_cluster', show_branch_points = T, cell_size = 0.5, cell_link_size = 0.3) + facet_wrap(~Type, nrow = 2) + scale_size(range = c(0.2, 0.2)) +
+plot_complex_cell_trajectory(URMM_all_abs[, ], color_by = 'paper_cluster', show_branch_points = T, cell_size = 0.5, cell_link_size = 0.3) + 
+  facet_wrap(~Type, nrow = 2) + scale_size(range = c(0.2, 0.2)) +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) + scale_color_manual(values = cluster_cols, name = "cluster")
 
 
@@ -1801,6 +1829,8 @@ plot_cell_trajectory(URMM_all_abs[, ], color_by = 'Type', show_branch_points = T
 
 
 ##################################### 第九步，在树型结构的每一个节点(或者叶子)观察细胞类型的分布 #####################################
+## we can visualize the fraction of cell types over each state of the tree structure in a heatmap
+## both heatmaps show that our method is able to put distinct cell types to different state (branch) of the learned tree structure
 ## 非常简单，实际就是构建一个matrix，matrix中每一个entry
 state_cluster_stat <- table(pData(URMM_all_fig1b)[, c('State', 'cluster')])
 state_cluster_stat # 一定要亲眼看看
@@ -1823,17 +1853,9 @@ pheatmap::pheatmap(state_cluster_stat_ordered, cluster_cols = F, cluster_rows = 
                    color = colorRampPalette(RColorBrewer::brewer.pal(n=9, name='Greys'))(10))
 
 
-
-
-
-
-
-
-
-
-
-
-
+########################## Identify genes which can be used to define stemness or lineage score ##########################
+# genes used to define stemness or lineage score are identified
+# the selected genes will also be used for the Paul dataset analysis
 fig1b_beam_genes_ery_meg <- BEAM(URMM_all_fig1b, branch_point = 1, verbose = F, cores = detectCores() - 2)
 fig1b_beam_genes_ery_meg_ILRs <- calILRs(URMM_all_fig1b, branch_point = 1, verbose = F, cores = detectCores() - 2)
 
@@ -1854,14 +1876,8 @@ fig1b_pseudotime_MEP <- differentialGeneTest(URMM_all_fig1b_MEP, verbose = F, co
 fig1b_pseudotime_GMP <- differentialGeneTest(URMM_all_fig1b_GMP, verbose = F, cores = detectCores() - 2)
 
 
-
-
-
-
-
-
-
-
+########################## Visualize the lineage score and stemness score on the tree ##########################
+# color the tree by the lineage / stemness score to verify the continous transition of cell states
 load('./valid_subset_GSE72857_cds2') #126 nodes in 10 dimensions
 ery_meg_lineage_score <- rowMeans(fig1b_beam_genes_ery_meg_ILRs)[row.names(subset(fig1b_beam_genes_ery_meg, qval <0.01))]
 
@@ -1883,20 +1899,21 @@ all_down_valid <- Reduce(intersect, list(row.names(valid_subset_GSE72857_cds2), 
 cell_stemness_score <- esApply(URMM_all_fig1b[all_down_valid, ], 2, function(x) mean(x))
 pData(URMM_all_fig1b)$cell_stemness_score <- cell_stemness_score
 options(repr.plot.width=4, repr.plot.height=4)
-plot_complex_cell_trajectory(URMM_all_fig1b, color_by = 'cell_stemness_score') +  scale_colour_gradientn(colours = terrain.colors(10)) + theme(legend.position="top", legend.title=element_blank())
+plot_complex_cell_trajectory(URMM_all_fig1b, color_by = 'cell_stemness_score') +  
+  scale_colour_gradientn(colours = terrain.colors(10)) + theme(legend.position="top", legend.title=element_blank())
 
 
 
 
-
+############################### Save the data for using in the Paul dataset ###############################
+# all_down_valid: associate with the stemness score
+# positive_score_genes, negtive_score_genes: associate with the lineage score
 save(all_down_valid, positive_score_genes, negtive_score_genes, file = 'gene_set')
 
 
 
-
-
-
-
+###############################  Create the multi-way kinetic curves as well as the heatmap ############################### 
+# we can visualize the gene expression dynamics over fate commitment either with the multi-way kinetic curves or the multi-way heatmap
 URMM_complex_tree_ery_meg_lineage_score_kinetic_curves_cols <- c("Ery/Meg" = "#B6A5D0", "Monocyte" = "#76C143", "Granulocyte" = "#3DC6F2")
 
 options(repr.plot.width=6, repr.plot.height=6)
@@ -1904,14 +1921,6 @@ plot_multiple_branches_pseudotime(URMM_all_fig1b[c('Car1', 'Elane', 'Car2', 'Prt
                                   branches=c(3, 4, 5), color_by = 'Branch',
                                   branches_name=c("Granulocyte", "Monocyte", "Ery/Meg"), nrow = 2, ncol = 2) +
   scale_color_manual(values = URMM_complex_tree_ery_meg_lineage_score_kinetic_curves_cols)
-
-
-
-
-
-
-
-
 
 
 options(repr.plot.width=8, repr.plot.height=12)
@@ -1927,7 +1936,7 @@ plot_multiple_branches_heatmap(URMM_all_fig1b[unique(c(positive_score_genes, neg
 
 
 
-
+######################################## Show the regulatory network ########################################
 
 load("./network_res")
 options(repr.plot.width=4, repr.plot.height=4)
