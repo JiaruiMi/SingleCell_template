@@ -616,7 +616,7 @@ plot_ordering_genes(HSMM)
 ## 重新挑选基因，只用黑色高亮的基因来进行聚类。
 
 ## 这里我们使用更少的基因（但是是特征基因，去噪非常好）来进行cluster
-plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log',
+plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log', 计算PCA，并通过碎石图查看变异解释度较大的PC，进一步去噪
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 3, 
                         norm_method = 'log',
                         reduction_method = 'tSNE', 
@@ -685,7 +685,7 @@ pie + coord_polar(theta = "y") +
 ###### Trajectory step 1: choose genes that define a cell's progress  
 # 核心思想是找到set of genes increase or decrease in expression as a function of process。
 # 当然我们最好不要依赖已有的知识，因为这会带来偏倚。一种方法是我们isolate在process的开始和结尾处的细胞，然后找差异表达基因
-
+# 在这里我们使用的是简化版的筛选gene，但是Monocle明确建议使用一种称之为"dpFeature"的方法来筛选gene（见后，搜索dpFeature）
 
 # 无监督的Pseudotime分析, 先不要执行上方impute cell type的环节
 HSMM_myo <- HSMM[,pData(HSMM)$CellType == "Myoblast"]   
@@ -712,7 +712,7 @@ ordering_genes <- subset(disp_table,
                            dispersion_empirical >= 1 * dispersion_fit)$gene_id
 
 
-## 跳过策略2:Once we have a list of gene ids to be used for ordering, we need to set them in the HSMM object, because 
+## 跳过策略1:Once we have a list of gene ids to be used for ordering, we need to set them in the HSMM object, because 
 ## the next several functions will depend on them.
 HSMM_myo <- setOrderingFilter(HSMM_myo, ordering_genes)
 plot_ordering_genes(HSMM_myo)
@@ -776,13 +776,17 @@ cds_subset <- HSMM_filtered[my_genes,]
 plot_genes_in_pseudotime(cds_subset, color_by = "Hours")
 
 
-##### Alternative choices for ordering genes
+##### Alternative choices for ordering genes -- for STEP 3 --Ordering based on genes that differ between clusters
+## Ordering based on genes that differ between clusters(筛选gene用于order cell，我们选用dpFeature)
+## dpFeature的第一步是选择那些至少在5%的细胞当中有表达的gene
 HSMM_myo <- detectGenes(HSMM_myo, min_expr = 0.1)
 fData(HSMM_myo)$use_for_ordering <-
-  fData(HSMM_myo)$num_cells_expressed > 0.05 * ncol(HSMM_myo)
+  fData(HSMM_myo)$num_cells_expressed > 0.05 * ncol(HSMM_myo)  # 这个5%好像有点太小了
 
+## 然后我们使用PCA进行降维，通过scree Plot(碎石图), 选择变异解释度较大的PC
 plot_pc_variance_explained(HSMM_myo, return_all = F)
 
+## 然后基于筛选得到的PCA进一步数据降维，使用tSNE投射到一个二维空间；返回结果perplexity is too large。。。
 HSMM_myo <- reduceDimension(HSMM_myo,
                             max_components = 2,
                             norm_method = 'log',
@@ -790,18 +794,91 @@ HSMM_myo <- reduceDimension(HSMM_myo,
                             reduction_method = 'tSNE',
                             verbose = T)
 
+## 使用density peak clustering来发现二维空间中的tSNE，这个density peak算法是基于每个细胞周围的密度p和到距离较远的细胞的最短距离delta来决定的
+## (不就是tSNE的算法核心么)，我们需要设定p和delta的阈值，来定义哪些细胞处在比较高的密度以内和距离范围以外。默认的clusterCell选择95%的p和
+## delta来定义阈值。我们还可以定义cluster的数量。默认参数往往就挺好使的了。
 HSMM_myo <- clusterCells(HSMM_myo, verbose = F)
 
+### clutering结束后，看看结果
 plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Cluster)')
 plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Hours)')
 
+### decision plot，选择最佳p和delta
 plot_rho_delta(HSMM_myo, rho_threshold = 2, delta_threshold = 4 )
 
+### 然后我们可以重新计算clustering，使用优化后的p和delta两个参数，使用(skip_rho_sigma = T) 跳过计算 Ρ, Σ的步骤
+HSMM_myo <- clusterCells(HSMM_myo,
+                         rho_threshold = 2,
+                         delta_threshold = 4,
+                         skip_rho_sigma = T,
+                         verbose = F)
+
+### 看一下最终clustering的结果
+plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Cluster)')
+plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Hours)')
+
+##### Alternative choices for ordering genes -- for STEP 3 --Ordering cells using known marker genes
+## 使用非监督聚类方法有助于我们无偏移地进行分析，然而有时计算机会执迷于一些与你所探讨的生物学问题无关的gene，比如细胞周期相关gene，这个时候
+## 使用半监督聚类方法就能很好的弥补了。方法是，首先使用CellTypeHierarchy来定义一些gene，然后通过这些gene找到co-vary的gene，最后基于这些所有
+## 的gene进行非监督的聚类，所以非监督和半监督的聚类方法的差别仅仅在于挑选的是哪些gene进行ordering。
+## 比如myoblast首先逃离细胞周期，经过一系列的变化，最终表达参与肌细胞收缩的关键基因。因此我们可以标记细胞周期基因cyclin B2(CCNB2)和myotubes
+## gene, 比如myosin heavy chain(MYH3)
+
+CCNB2_id <-
+  row.names(subset(fData(HSMM_myo), gene_short_name == "CCNB2"))
+MYH3_id <-
+  row.names(subset(fData(HSMM_myo), gene_short_name == "MYH3"))
+
+cth <- newCellTypeHierarchy()
+
+cth <- addCellType(cth,
+                   "Cycling myoblast",
+                   classify_func = function(x) { x[CCNB2_id,] >= 1 })
+
+cth <- addCellType(cth,
+                   "Myotube",
+                   classify_func = function(x) { x[MYH3_id,] >= 1 })
+
+cth <- addCellType(cth,
+                   "Reserve cell",
+                   classify_func =
+                     function(x) { x[MYH3_id,] == 0 & x[CCNB2_id,] == 0 })
+
+HSMM_myo <- classifyCells(HSMM_myo, cth)
 
 
+### 找到co-vary的gene
+marker_diff <- markerDiffTable(HSMM_myo[HSMM_expressed_genes,],
+                               cth,
+                               cores = 1)
+#semisup_clustering_genes <-
+#row.names(subset(marker_diff, qval < 0.05))
+semisup_clustering_genes <-
+  row.names(marker_diff)[order(marker_diff$qval)][1:1000]
 
+### 使用前1000个gene进行ordering
+HSMM_myo <- setOrderingFilter(HSMM_myo, semisup_clustering_genes)
+#plot_ordering_genes(HSMM_myo)
+HSMM_myo <- reduceDimension(HSMM_myo, max_components = 2,
+                            method = 'DDRTree', norm_method = 'log')
+HSMM_myo <- orderCells(HSMM_myo)
+HSMM_myo <- orderCells(HSMM_myo, root_state = GM_state(HSMM_myo))
+plot_cell_trajectory(HSMM_myo, color_by = "CellType") +
+  theme(legend.position = "right")
 
+### 我们通过观察某些标志gene的分布，可以大致评估这个trajectory是不是make sense
+###  In this experiment, one of the branches corresponds to cells that successfully fuse to form myotubes, and the other to those that 
+### fail to fully differentiate
+HSMM_filtered <- HSMM_myo[HSMM_expressed_genes,]
 
+my_genes <- row.names(subset(fData(HSMM_filtered),
+                             gene_short_name %in% c("CDK1", "MEF2C", "MYH3")))
+
+cds_subset <- HSMM_filtered[my_genes,]
+plot_genes_branched_pseudotime(cds_subset,
+                               branch_point = 1,
+                               color_by = "Hours",
+                               ncol = 1)
 
 ########################################### 直接做差异分析 ###########################################
 # 前面的聚类分析和Pseudotime分析都需要取基因子集，就已经利用过差异分析方法来挑选那些有着显著表达差异的基因。
@@ -844,10 +921,63 @@ reduced_model_fits <- fitModel(cds_subset, modelFormulaStr="~1")
 diff_test_res <- compareModels(full_model_fits, reduced_model_fits)
 diff_test_res
 
+to_be_tested <- row.names(subset(fData(HSMM),
+                                 gene_short_name %in% c("MYH3", "MEF2C", "CCNB2", "TNNT1")))
+cds_subset <- HSMM_myo[to_be_tested,]
+
+diff_test_res <- differentialGeneTest(cds_subset,
+                                      fullModelFormulaStr = "~sm.ns(Pseudotime)")
+
+diff_test_res[,c("gene_short_name", "pval", "qval")]
+
 plot_genes_in_pseudotime(cds_subset, color_by="Hours")
 
 
-########################################### 算法 ###########################################
+diff_test_res <- differentialGeneTest(HSMM_myo[marker_genes,],
+                                      fullModelFormulaStr = "~sm.ns(Pseudotime)")
+sig_gene_names <- row.names(subset(diff_test_res, qval < 0.1))
+plot_pseudotime_heatmap(HSMM_myo[sig_gene_names,],
+                        num_clusters = 3,
+                        cores = 1,
+                        show_rownames = T)
+
+to_be_tested <-
+  row.names(subset(fData(HSMM),
+                   gene_short_name %in% c("TPM1", "MYH3", "CCNB2", "GAPDH")))
+
+cds_subset <- HSMM[to_be_tested,]
+
+diff_test_res <- differentialGeneTest(cds_subset,
+                                      fullModelFormulaStr = "~CellType + Hours",
+                                      reducedModelFormulaStr = "~Hours")
+diff_test_res[,c("gene_short_name", "pval", "qval")]
+plot_genes_jitter(cds_subset,
+                  grouping = "Hours", color_by = "CellType", plot_trend = TRUE) +
+  facet_wrap( ~ feature_label, scales= "free_y")
+
+############################### Analyzing Branches in Single-Cell Trajectories ###############################
+lung <- load_lung()
+plot_cell_trajectory(lung, color_by = "Time")
+
+BEAM_res <- BEAM(lung, branch_point = 1, cores = 1)
+BEAM_res <- BEAM_res[order(BEAM_res$qval),]
+BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
+
+plot_genes_branched_heatmap(lung[row.names(subset(BEAM_res,
+                                                  qval < 1e-4)),],
+                            branch_point = 1,
+                            num_clusters = 4,
+                            cores = 1,
+                            use_gene_short_name = T,
+                            show_rownames = T)
+
+lung_genes <- row.names(subset(fData(lung),
+                               gene_short_name %in% c("Ccnd2", "Sftpb", "Pdpn")))
+plot_genes_branched_pseudotime(lung[lung_genes,],
+                               branch_point = 1,
+                               color_by = "Time",
+                               ncol = 1)
+#################################################### 算法 ####################################################
 # Monocole还提出了好几个算法：
 ## dpFeature: Selecting features from dense cell clusters
 ## Reversed graph embedding
