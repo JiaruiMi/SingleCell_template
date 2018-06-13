@@ -1156,29 +1156,35 @@ HSMM <- estimateDispersions(HSMM)
 
 #===============================================================================================================
 #
-#                        "Monocle2" package (Monocle 2.8.0)  Dave Tang's Analysis
+#                    "Monocle2" package (Monocle 2.8.0)  Dave Tang's Analysis (UMI data)
 #
 #===============================================================================================================
+## 首先我们来了解一下这个数据集
+## I will use an open dataset provided by 10x Genomics, which was generated from Peripheral Blood Mononuclear Cells (PBMCs) from a 
+## healthy donor. PBMCs are primary cells, which are cells isolated directly from tissue using enzymatic or mechanical methods, with 
+## relatively small amounts of RNA (around 1pg RNA per cell). The data was sequenced on an Illumina HiSeq 4000 with approximately 92,000 
+## reads per 8,381 cells. This dataset was processed with Cell Ranger 2.0.1 with the parameter –cells=10000.
+## 我们看到使用10X Genomics，我们每个细胞得到的平均reads数是92000个。
+
 
 ########################################### 读入数据，构建CellDataSet对象 ######################################
 
 setwd('/Users/mijiarui/Monocle')
 library(monocle)
-library(cellrangerRkit)
+library(cellrangerRkit)  # 我们使用cellrangerRkit包来将10X的下机后的单细胞数据读入R当中
 packageVersion("cellrangerRkit")
-getwd()
 
 # 注意，根据Dave Tang的博客，我们需要建立一个叫pbmc8k的文件夹，再建立一个叫outs的子文件夹，然后把tar的内容存放进去，这样load_cellranger_matrix
 # 才能读取
 my_dir <- "/Users/mijiarui/Monocle/pbmc8k"
 # load data
 gbm <- load_cellranger_matrix(my_dir)
-class(gbm)  # 这个对象也是基于ExpressionSet来进行开发的，所以可以使用exprs(), pData()和fData()来读取对象中的内容  
+class(gbm)  # 这个对象类型，也是基于ExpressionSet来进行开发的，所以可以使用exprs(), pData()和fData()来读取对象中的内容  
 
 # check out the expression data using exprs()
 # 33,694 genes across 8,381 single cells
 dim(exprs(gbm))
-exprs(gbm)[1:5, 1:5]   # 可以看出CellRanger的矩阵输出默认是稀疏矩阵sparse matrix
+exprs(gbm)[1:5, 1:5]   # 可以看出CellRanger的矩阵输出默认是稀疏矩阵sparse matrix; 我们这边的是UMI data，相当于counts数据，符合负二项分布
 
 # check out the phenotypic data
 dim(pData(gbm))
@@ -1192,17 +1198,18 @@ head(fData(gbm))
 ## or else you will get a warning. 所以现对fData进行少许微调：
 
 # rename gene symbol column
-my_feat <- fData(gbm)
-names(my_feat) <- c('id', 'gene_short_name')
+my_feat <- fData(gbm)  # 我们把featureData存到另一个变量当中去，然后修改列名，确保gene symbol的列名是gene_short_name
+names(my_feat) <- c('id', 'gene_short_name')  # 如果不这么修改，在构建CellDataSet这个对象的时候，会有warning message
 
 # no warning
 my_cds <- newCellDataSet(exprs(gbm),
                          phenoData = new("AnnotatedDataFrame", data = pData(gbm)),
-                         featureData = new("AnnotatedDataFrame", data = my_feat),
+                         featureData = new("AnnotatedDataFrame", data = my_feat),   # featureData输入的是经过列名修改过的my_feat
                          lowerDetectionLimit = 0.5,
                          expressionFamily = negbinomial.size())
 
 my_cds
+str(my_cds)
 # see ?CellDataSet for more information
 slotNames(my_cds)
 
@@ -1213,23 +1220,28 @@ my_cds <- estimateDispersions(my_cds)
 
 ## exploratory data analysis
 ### detectGenes()函数会帮助我们计算一个gene在多少个细胞中表达，和一个细胞表达多少个gene，分别添加到fData和pData当中去
+### 相当于一个很初步的统计
 my_cds <- detectGenes(my_cds, min_expr = 0.1) # 只要有1个counts就会被认作这个gene是表达的，因为我们这边设定的最小识别阈值是0.1
-head(fData(my_cds))
+head(fData(my_cds))  # num_cells_expressed列
 summary(fData(my_cds)$num_cells_expressed)
+head(pData(my_cds))  # num_genes_expressed列
+summary(pData(my_cds)$num_genes_expressed)
+
 
 ### The num_cells_expressed column is a tally of the number of cells expressing a particular gene (a gene is “expressed” if there is at 
 ### least one count since we set min_expr = 0.1). For example if we tally ENSG00000239945 across all cells, we should get 1, as indicated 
 ### in the table above.
-sum((exprs(my_cds['ENSG00000239945',])))
-sum((exprs(my_cds['ENSG00000238009',])))
+class(exprs(my_cds['ENSG00000239945',])) # 这个exprs的还是以稀疏矩阵的格式存在
+sum(exprs(my_cds['ENSG00000239945',]))
+sum(exprs(my_cds['ENSG00000238009',]))
 
 ### The number of genes expressed (num_genes_expressed) per cell is stored in phenoData. Note that if a gene has 10 UMIs or 1 UMI, 
 ### it is still tallied as 1.
 head(pData(my_cds))
 # sanity check for AAACCTGAGCATCATC-1
-sum((exprs(my_cds)[,"AAACCTGAGCATCATC-1"])>0)
+sum(exprs(my_cds)[,"AAACCTGAGCATCATC-1"]>0)
 summary(pData(my_cds)$num_genes_expressed)
-# standardise to Z-distribution
+# standardise to Z-distribution，我们对每个细胞能够检测到的gene数的统计结果进行可视化
 x <- pData(my_cds)$num_genes_expressed
 x_1 <- (x - mean(x)) / sd(x)
 summary(x_1)
@@ -1245,8 +1257,8 @@ ggplot(df, aes(x)) +       # Only a few cells have an abnormal number of express
 ### We can also add our own metadata, such as the UMI count, to the phenoData.
 # add a UMI column into phenoData
 # use Matrix because data is in the sparse format
-pData(my_cds)$UMI <- Matrix::colSums(exprs(my_cds))
-head(pData(my_cds))
+pData(my_cds)$UMI <- Matrix::colSums(exprs(my_cds))  # 矩阵的纵向求和，得到每个细胞的UMI�数。在矩阵中每一个entry是一个细胞当中的一个gene的UMI个数
+head(pData(my_cds))  # 在pData当中增加UMI一列
 ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()  # 我们可以滤除那些有很高UMI/gene的细胞，因为它们有可能是doublet
 
 ####################################### Clustering cells without marker genes #######################################
@@ -1254,44 +1266,43 @@ ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()  # 我们可
 # determining a subset of genes to use for clustering; this is because not all genes are informative, such as those that are lowly 
 # expressed. The approach is to select gene based on their average expression and variability across cells. The dispersionTable() 
 # function calculates the mean and dispersion values (for each gene).
-disp_table <- dispersionTable(my_cds)
-head(disp_table)
+# 一提到聚类，脑子里第一个问题就是，筛选有效基因进行第一层次的数据降维；大部分gene是不informative的
+# 我们一般会先绘制一个dispersion ～ mean expression的散点图，重点关注表达量高的gene或者HVG
+disp_table <- dispersionTable(my_cds) # 得到一个矩阵，为啥只有19434行？(总基因数是33694行)
+head(disp_table); dim(disp_table)
 
 ## We will select genes, which have a mean expression >= 0.1, to use in the clustering step. The setOrderingFilter() function allows us 
 ## to indicate which genes we want to use for clustering. The plot_ordering_genes() function plots mean expression against the empirical 
 ## dispersion and highlights the set of genes (as black dots) that will be used for clustering.
-table(disp_table$mean_expression>=0.1) # 我们的筛选标准是mean expression >= 0.1，我们先来看一下统计结果
-unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
+table(disp_table$mean_expression>=0.1) # 我们的筛选标准是mean expression >= 0.1，我们先来看一下统计结果，只有4012个gene用于cluster
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1) # 我们把满足
 
-my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id)
-plot_ordering_genes(my_cds)
+fData(my_cds)
+my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id) # 这一步会在fData(my_cds)中增加use_for_ordering这个变量，存储T/F的结果
+fData(my_cds)
+plot_ordering_genes(my_cds)   # plot_ordering_genes默认将细胞以dispersion为纵轴，mean expression为横轴绘制散点图；用于后续cluster的gene黑色高亮
 
 ## It will take a lot of computational time to cluster 8,381 cells even when we have subsetted the total number of genes down to 4,012. 
 ## The usual approach is to perform dimension reduction (typically Principal Component Analysis [PCA]) and use the principal components 
 ## that explain the majority of the variance in the data. The plot_pc_variance_explained() function plots the percentage of variance 
 ## explained by each component based on a PCA performed on the normalised expression data. From the plot we can decide the number of 
 ## components to use in our downstream analyses.
-plot_pc_variance_explained(my_cds, return_all = FALSE)   
+## 目前单细胞测序的数据降维默认采用PCA+tSNE的方法
+plot_pc_variance_explained(my_cds, return_all = FALSE)   # 如函数名，这个函数绘制碎石图，方便用户选择PC的个数用于后续聚类
 ### 这一步比较耗时，The goal is to identify the elbow in this plot, which can be a bit subjective.
-### The warning message is from the irlba() function, which was used to perform the PCA. The “results might be invalid [sic]” warning is 
-### a bit worrying though, so I’m not sure whether or not the plot is valid. I’ll perform dimension reduction using five and ten principal 
-### components (by setting the num_dim parameter, which is used as input to the prcomp_irlba() function) and compare the clustering results.
+
 
 ## 开始进行聚类，使用clusterCells()函数
 ## The clusterCells() function performs the clustering on a CellDataSet; however, you need to input the number of requested clusters. 
-## The results of the clustering are stored in the phenoData table. 作者在这边arbitrarily 选择了15个cluster
-
-## 我们先看看使用5个PC的结果
-# if num_dim is not set, the default is set to 50
-# I'll use 5 here based on plot_pc_variance_explained，我们只选择前5的PC进行降维去噪。
+## 我们先看看使用5个PC的结果；如果num_dim没有事先指定，默认值是50个PC。在这里我们只选择前5的PC进行降维去噪。
 my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 5,         # 这一步比较耗时
-                          reduction_method = 'tSNE', verbose = TRUE)
+                          reduction_method = 'tSNE', verbose = TRUE) # 我们在进程中可以看到remove noise by PCA和reduce dimension by tSNE
 
 # perform unsupervised clustering requesting 15-1 clusters，我们最高选取15个cluster，计算机会从1-15进行计算，找到当中cluster数最合理的
-my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_cds <- clusterCells(my_cds, num_clusters = 15) # 这一步的结果与Dave的结果略有出入：4.797959
 
-# cluster information is in the Cluster column，存储在pData当中 
-head(pData(my_cds))
+# cluster information is in the Cluster column，Cluster信息存储在pData当中，一共有14个cluster
+head(pData(my_cds)); pData(my_cds)$Cluster
 
 # store cluster info for comparing later
 my_cluster_dim_5 <- pData(my_cds)$Cluster
@@ -1302,7 +1313,8 @@ plot_cell_clusters(my_cds)
 ## 我们再看看使用10个PC的结果
 my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 10,
                           reduction_method = 'tSNE', verbose = TRUE)
-my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_cds <- clusterCells(my_cds, num_clusters = 15)  # 结果还是和Dave的略有差别的，好在还是分出了14群细胞
+table(pData(my_cds)$Cluster)
 my_cluster_dim_10 <- pData(my_cds)$Cluster
 plot_cell_clusters(my_cds)
 
@@ -1312,20 +1324,22 @@ library(clues)
 adjustedRand(as.numeric(my_cluster_dim_5), as.numeric(my_cluster_dim_10))
 ### The ARI (HA) suggests that the clustering of cells is quite different when including different numbers of principal components. 
 ### I also compared clustering results with num_dim = 4 and num_dim = 5 and while the ARI is higher than the comparison between 
-### num_dim = 5 and num_dim = 10, it still implies that the cell clusters are quite different.
+### num_dim = 5 and num_dim = 10, it still implies that the cell clusters are quite different. 也就是我们在这边比较使用5个PC和10个PC进行
+### cluster的结果，HA值的高低反映了两者的差别，这个值越大提示clustering得到的结果差别越大。作者另外还计算了使用4个PC进行cluster的结果，我
+### 在这边不进行罗列，最后的比较4个PC和10个PC的结果得到的HA值�比5个PC和10个PC的HA值更大。
 
 # For the rest of the analysis, I will be using num_dim = 10 and num_clusters = 15. 为了方便可重复性，我们选择PC是10个，最多cluster是15个
-# include 10 dimensions
+# include 10 dimensions，得到了14个细胞群。
 
 
-############################################### Differential expression ##############################################
+######################################### Differential expression 和marker gene ##############################################
 # One of the main interests of single cell transcriptomics is the identification of novel markers for cell types. We can use 
 # differentialGeneTest(), which is quite a flexible function, to find marker genes by assessing each gene’s expression level across the 
 # cells. The model formulae used in the function can use any column in the phenoData table, including columns that we manually add.
-# marker gene的筛选可以针对任何pData当中的column，类似于time，medium或者很多其它自己加入的属性  。
+# 使用differentialGeneTest()这个函数。marker gene的筛选可以针对任何pData当中的column，类似于time，medium或者很多其它自己加入的属性  。
 
 # I’ll create a vector that indicates whether a single was clustered in “Cluster 1” or not to identify genes differentially expressed in 
-# cluster 1 versus the other clusters.
+# cluster 1 versus the other clusters. Dave在这边将cluster1的细胞都标记出来，其余都是非cluster1，然后计算cluster1和非cluster1的差异基因
 
 # create vector of no's
 my_vector <- rep('no', nrow(pData(my_cds)))
@@ -1333,34 +1347,37 @@ my_vector <- rep('no', nrow(pData(my_cds)))
 # change status to yes if the cell was in cluster 1
 table(pData(my_cds)$Cluster) # 我们看到一共有14个cluster, 其中cluster1的有1135个
 my_vector[pData(my_cds)$Cluster == 1] <- rep('yes', sum(pData(my_cds)$Cluster == 1))
-table(my_vector)
+table(my_vector)  # 这样就将对应cluster==1的细胞的数值由默认的no改成了yes
 
-# add vector to phenoData
+# add vector to phenoData，放入test这一列
 pData(my_cds)$test <- my_vector
 head(pData(my_cds))
 
 # I’ll perform the differential expression analysis on the subset of genes where the mean expression (across cells) was >= 0.1
-length(unsup_clustering_genes$gene_id)  # 之前挑选出来用于cluster的gene(平均表达量大于0.1），共4012个
+length(unsup_clustering_genes$gene_id)  # 之前挑选出来用于cluster的gene(平均表达量大于0.1），共4012个，的dispersion， mean expression信息
 de_cluster_one <- differentialGeneTest(my_cds[unsup_clustering_genes$gene_id,],
-                                      fullModelFormulaStr = '~test',
+                                      fullModelFormulaStr = '~test',     # 这个formular提示哪两组进行比较
                                       cores = 8)
-dim(de_cluster_one)
+dim(de_cluster_one) # 得到一个矩阵，增加了pval和qval两列
+de_cluster_one
 
 # order by q-value
 library(dplyr)
-de_cluster_one %>% arrange(qval) %>% head()
+de_cluster_one %>% arrange(qval) %>% head()  # dplyr包中的arrange函数，对qval进行排序，默认从小到大，如果要降序，使用desc(qval)
 
 # Let’s check out CTSS (ENSG00000163131), which is the most statistically significant gene, using plot_genes_fitter().
-plot_genes_jitter(my_cds['ENSG00000163131',], grouping = "Cluster")
+# 注意Dave的测试自己有一点问题，返回结果不是4012个gene，所以他的结果中最significant的是ENSG00000163131
+plot_genes_jitter(my_cds['ENSG00000163131',], grouping = "Cluster") # 根据cluster来看jitterplot的结果
 ## CTSS is specific for cluster 1 but also for clusters 4 and 6. We count data hence the expression is on a discrete scale.
+## 在我的数据集中CTSS高表达于3，5，8三个cluster，而非cluster1，但是为了后续分析的一致性，我们先使用这个gene
 
-# We can use plot_cell_clusters() to highlight clusters 1, 4, and 6.
+# We can use plot_cell_clusters() to highlight clusters 1, 4, and 6. （相应的修改成3，5，8）
 # add another column to the phenotypic data
-# where TRUE means cluster membership in clusters 1, 4, or 6
-pData(my_cds)$my_colour <- pData(my_cds)$Cluster == 1 | pData(my_cds)$Cluster == 4 | pData(my_cds)$Cluster == 6
+# where TRUE means cluster membership in clusters 1, 4, or 6 （相应的修改成3，5，8）
+pData(my_cds)$my_colour <- pData(my_cds)$Cluster == 3 | pData(my_cds)$Cluster == 5 | pData(my_cds)$Cluster == 8 # 增加my_colour一列
 table(pData(my_cds)$my_colour)
-plot_cell_clusters(my_cds, color_by = 'my_colour')  # CTSS is overexpressed in clusters 1, 4, and 6, which are highlighted in turquoise.
-
+plot_cell_clusters(my_cds, color_by = 'my_colour')  # CTSS is overexpressed in clusters 3, 5, and 8, which are highlighted in turquoise.
+## 这个结果和Dave的还是比较一致的。
 
 ############################################### Constructing Single Cell Trajectories ###############################################
 # The “unit” used for the trajectory is pseudotime; a cell at the beginning of the trajectory, i.e. starting state, will have a lower 
@@ -1372,14 +1389,15 @@ plot_cell_clusters(my_cds, color_by = 'my_colour')  # CTSS is overexpressed in c
 # STEP3: Order cells in pseudotime
 
 # For the trajectory analysis in this post, I will use only a subset of all cells (cluster 1, 4, and 6) and genes that are expressed in 
-# at least 10 cells. 为了方便计算，Dave只筛选了在cluster1,4,6中的细胞，并且只纳入在大于等于10个细胞以上有表达的基因进行分析。
+# at least 10 cells. 为了方便计算，Dave只筛选了在cluster1,4,6中的细胞，并且只纳入在大于等于10个细胞以上有表达的基因进行分析。当然在我的这个
+# 数据里面就是3，5，8三个cluster，上面已经给出了。也就是说我们只分析这三个cluster当中细胞的pseudotime
 expressed_genes <- row.names(subset(fData(my_cds), num_cells_expressed >= 10))
 
-# my_colour is TRUE if a cell belongs to either cluster 1, 4, or 6
-my_cds_subset <- my_cds[expressed_genes, pData(my_cds)$my_colour]
+# my_colour is TRUE if a cell belongs to either cluster 1, 4, or 6 （对应修改成3，5，8）
+my_cds_subset <- my_cds[expressed_genes, pData(my_cds)$my_colour]   # 我们把满足条件的细胞和基因给挑选出来了。
 
 # 15,446 genes and 2,060 cells
-my_cds_subset
+my_cds_subset  # 稍有出入，这是和一开始的cluster的distance结果有出入是相关的
 
 ## We’ll use the recommended approach of ordering based on genes that differ between clusters. First, we’ll perform another subset of 
 ## genes, keeping only genes expressed in greater than 5% of cells. 进一步筛选在5%以上的细胞有表达的gene
@@ -1395,14 +1413,14 @@ plot_pc_variance_explained(my_cds_subset, return_all = FALSE)   # 耗时
 ## clustering as before (see section “Clustering cells without marker genes”) but this time without specifying the number of clusters; 
 ## we will use thresholds on the cell’s local density (rho) and nearest distance (delta) to determine the number of clusters. 
 ## 在这次更新之后（2.8.0，作者的版本是2.4.0），并没有出现warning message，在这里作者选择了10个PC。但是这次我们并不指定cluster的数目，而是
-## 指定细胞局部的density(rho)和nearest distance(delta)来确定cluster的数目。
+## 指定细胞局部的density(rho)和nearest distance(delta)来确定cluster的数目（特地用在了pseudotime分析上面）。
 my_cds_subset <- reduceDimension(my_cds_subset,        # 耗时
                                  max_components = 2,
                                  norm_method = 'log',
                                  num_dim = 10,
                                  reduction_method = 'tSNE',
                                  verbose = TRUE)
-my_cds_subset <- clusterCells(my_cds_subset, verbose = FALSE)
+my_cds_subset <- clusterCells(my_cds_subset, verbose = FALSE)  # Dave的结果是3.551792
 plot_rho_delta(my_cds_subset, rho_threshold = 2, delta_threshold = 10)   # Scatter plot of rho versus delta.
 
 # We’ll use rho = 2 and delta = 10 to cluster the cells again.
@@ -1411,30 +1429,33 @@ my_cds_subset <- clusterCells(my_cds_subset,
                               delta_threshold = 10,
                               skip_rho_sigma = T,     # 别再计算rho和delta了
                               verbose = FALSE)
-table(pData(my_cds_subset)$Cluster)
+table(pData(my_cds_subset)$Cluster)    # Dave的结果是4个cluster
 plot_cell_clusters(my_cds_subset)
 
 # Now we’ll perform the differential gene expression analysis as before but across all cell clusters.
-clustering_DEG_genes <- differentialGeneTest(my_cds_subset,
+clustering_DEG_genes <- differentialGeneTest(my_cds_subset,      # 这一步相当耗时，是pairwise的计算差异表达然后进行multiple-testing的校正？
                                              fullModelFormulaStr = '~Cluster',
                                              cores = 8)
-dim(clustering_DEG_genes)
-clustering_DEG_genes %>% arrange(qval) %>% head()
+dim(clustering_DEG_genes)   
+head(clustering_DEG_genes)
+clustering_DEG_genes %>% arrange(qval) %>% head() # 我们还是根据qval升序，然后显示前6个；和Dave的结果差不多哟！
 
 ## We’ll use the top 1,000 most significantly differentially expressed genes as the set of ordering genes and perform the dimension 
-## reduction and the trajectory analysis (using the orderCells() function).
+## reduction and the trajectory analysis (using the orderCells() function). 对trajectory的分析也是基于差异基因的筛选的，而且是across all
+## clusters，我们用这些gene进行降维和trajectory的分析
 my_ordering_genes <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
 my_cds_subset <- setOrderingFilter(my_cds_subset, ordering_genes = my_ordering_genes)
 my_cds_subset <- reduceDimension(my_cds_subset, method = 'DDRTree')  # 耗时
 
 # the warnings were for use of deprecated code
-my_cds_subset <- orderCells(my_cds_subset)
+my_cds_subset <- orderCells(my_cds_subset)  # 使用orderCells函数，在pData中增加了Pseudotime一项？
+pData(my_cds_subset)
 
 plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
 
 ################################### Finding Genes that Change as a Function of Pseudotime ###################################
 # Once we have a trajectory, we can use differentialGeneTest() to find genes that have an expression pattern that varies according 
-# to pseudotime. 也就是说trajectory构建好了以后，就可以看每个gene在trajectory上的分布了，使用的是differentialGeneTest()函数
+# to pseudotime. 也就是说trajectory构建好了以后，就可以使用的是differentialGeneTest()函数，来找到随着pseudotime发生变化的gene。
 
 # pseudotime is now a column in the phenotypic data as well as the cell state
 head(pData(my_cds_subset))
@@ -1442,13 +1463,13 @@ head(pData(my_cds_subset))
 my_pseudotime_de <- differentialGeneTest(my_cds_subset,
                                          fullModelFormulaStr = "~sm.ns(Pseudotime)",
                                          cores = 8)
-my_pseudotime_de %>% arrange(qval) %>% head()
+my_pseudotime_de %>% arrange(qval) %>% head()  # 显示pseudotime发现的差异基因，根据qval进行从小到大进行排序。
 
-# save the top 6 genes(因为我这边用了head函数); 不是很理解这段代码，尤其是为啥select函数无法正确在dplyr包中使用
-a <- my_pseudotime_de %>% arrange(qval) %>% head()
+
+# save the top 6 genes(因为我这边用了head函数); 尤其是为啥select函数无法正确在dplyr包中使用
+a <- my_pseudotime_de %>% arrange(qval) %>% head() 
 a[,'id'] -> my_pseudotime_gene
-my_pseudotime_gene <- my_pseudotime_gene$id  # 会报错，但是不影响后面运行
-plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])
+plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])   # State在Dave的结果里是5个，重新check一下。
 
 
 ################################### Clustering Genes by Pseudotemporal Expression Pattern ###################################
@@ -1458,10 +1479,9 @@ plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])
 # cluster the top 50 genes that vary as a function of pseudotime
 b <- my_pseudotime_de %>% arrange(qval) %>% head(50)
 b[,'id']-> gene_to_cluster
-gene_to_cluster <- gene_to_cluster$id  # 会报错，但是不影响后面运行
 
-my_pseudotime_cluster <- plot_pseudotime_heatmap(my_cds_subset[gene_to_cluster,],
-                                                 num_clusters = 3,
+my_pseudotime_cluster <- plot_pseudotime_heatmap(my_cds_subset[gene_to_cluster,],   # 结果和Dave的有点出入，HLA-B和HLA-C的位置
+                                                 num_clusters = 3,   # 这边我们指定了number of cluster
                                                  cores = 8,
                                                  show_rownames = TRUE,
                                                  return_heatmap = TRUE)
@@ -1473,8 +1493,9 @@ newdata <- data.frame(Pseudotime = seq(min(pData(my_cds_subset)$Pseudotime),
 # hierarchical clustering was used to cluster the genes
 # we can cut the dendrogram to form the same 3 clusters as plot_pseudotime_heatmap
 my_cluster <- cutree(my_pseudotime_cluster$tree_row, 3)
+my_cluster
 
-# genes in cluster 1
+# genes in cluster 1, 这个结果和Dave的差不多
 my_pseudotime_de[names(my_cluster[my_cluster == 1]),"gene_short_name"]
 
 # genes in cluster 2
@@ -1498,9 +1519,9 @@ BEAM_res <- BEAM_res[order(BEAM_res$qval),]
 BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
 
 # check out the results
-head(BEAM_res)
+head(BEAM_res)  
 
-table(BEAM_res$qval < 1e-4)
+table(BEAM_res$qval < 1e-4)   # Dave的结果是15230，216
 
 my_branched_heatmap <- plot_genes_branched_heatmap(my_cds_subset[row.names(subset(BEAM_res, qval < 1e-4)),],
                                                    branch_point = 1,
@@ -1531,6 +1552,108 @@ plot_genes_branched_pseudotime(my_cds_subset[my_gene,],
                                branch_point = 1,
                                ncol = 1)
 ## The trend lines show the expression pattern of genes along the paths formed by branch point 1.
+
+
+
+#===============================================================================================================
+#
+#               "Seurat" package (Seurat 2.3.1)  Dave Tang: Merge two 10X single cell datasets
+#
+#===============================================================================================================
+# 首先需要按要求建立文件夹，并下载两个数据集，请follow这个link：https://davetang.org/muse/2018/01/24/merging-two-10x-single-cell-datasets/
+# 加载Seurat
+library(Seurat)
+library(ggplot2)
+packageVersion('Seurat')
+
+# 加载数据，使用Read10X()函数可以读入10X的数据，你所要做的就是指定matrix, genes, barcodes的文件路径，注意，是到GRCh38文件夹下
+## 加载第一个数据集pbmc4k
+pbmc4k.data <- Read10X(data.dir = "/Users/mijiarui/Seurat_SatijaLab/pbmc4k/filtered_gene_bc_matrices/GRCh38")
+pbmc4k <- CreateSeuratObject(raw.data = pbmc4k.data, project = "PBMC4K")
+## 加载第二个数据集pbmc8k
+pbmc8k.data <- Read10X(data.dir = "/Users/mijiarui/Seurat_SatijaLab/pbmc8k/filtered_gene_bc_matrices/GRCh38")
+pbmc8k <- CreateSeuratObject(raw.data = pbmc8k.data, project = "PBMC8K")
+
+## 查看一下两个数据集，你应该看一下基因的数据是不是一致
+pbmc4k
+pbmc8k
+4340 + 8381 # 两组数据加起来的细胞数时12721
+
+## merge 两组数据
+pbmc<- MergeSeurat(object1 = pbmc4k,
+                   object2 = pbmc8k,
+                   add.cell.id1 = "4K", 
+                   add.cell.id2 = "8K",
+                   project = "PBMC12K")
+pbmc  # 再次查看新的merge过后的dataset，也是12721个细胞
+
+## 之后是一些质量控制，我们过滤掉mitochondria基因比列比较高的细胞
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = pbmc@raw.data), value = TRUE)
+length(mito.genes) # 一共有13个mitochondria gene
+percent.mito <- Matrix::colSums(pbmc@raw.data[mito.genes, ]) / Matrix::colSums(pbmc@raw.data)
+str(pbmc) # 目前的metadata只有nGene，nUMI和orig.ident
+pbmc <- AddMetaData(object = pbmc,
+                    metadata = percent.mito,
+                    col.name = "percent.mito")
+str(pbmc) # metadata增加了percent.mito
+
+## cell QC，根据nGene，nUMI和percent.mito进行可视化
+VlnPlot(object = pbmc,
+        features.plot = c("nGene", "nUMI", "percent.mito"),
+        nCol = 3)
+
+## Dave在这边过滤掉了percent.mito高于9%的细胞：We’ll filter out cells with 9% or higher mitochondrial content (a completely arbitrary threshold that I chose).
+###  可视化一下
+ggplot(pbmc@meta.data, aes(nUMI, percent.mito)) +
+  geom_point(size = 0.5) +
+  geom_hline(yintercept = 0.09, linetype = "dashed", colour = "red")
+
+### 进行数据过滤，我们筛选gene在200-2500的细胞，同时线粒体基因的比例不超过9%
+pbmc <- FilterCells(object = pbmc,
+                    subset.names = c("nGene", "percent.mito"),
+                    low.thresholds = c(200, -Inf),
+                    high.thresholds = c(2500, 0.09))
+
+
+## 然后我们需要进行PCA，但是PCA之前我们首先要选择进行PCA的gene，去除不必要的噪声
+## Setting the y.cutoff parameter to 2 identifies genes that are more than two standard deviations away from the average dispersion 
+## within a bin. Dave在这边设定的阈值是0.8(dispersion在0.8个标准差以外的gene），得到4000多个gene。
+pbmc <- FindVariableGenes(object = pbmc,        # 结果存储在pbmc@var.genes里面
+                          mean.function = ExpMean,
+                          dispersion.function = LogVMR,
+                          x.low.cutoff = 0.0125,
+                          x.high.cutoff = 3,
+                          y.cutoff = 0.8)
+length(pbmc@var.genes)
+
+## 然后对gene的表达量，根据UMI和线粒体基因的比例进行校正，有点费时，更要命的是非常耗内存，所以运行不下去，不过分析流程是这样的
+## 也尝试过只校正nUMI仍然有内存溢出的现象。
+pbmc <- ScaleData(object = pbmc,
+                  vars.to.regress = c("nUMI", "percent.mito"))
+
+## 终于得到干净的数据，可以进行PCA分析了
+pbmc <- RunPCA(object = pbmc,
+               pc.genes = pbmc@var.genes,
+               do.print = TRUE,
+               pcs.print = 1:5,
+               genes.print = 5)
+PCAPlot(object = pbmc, dim.1 = 1, dim.2 = 2)   # 我们看到来自两个数据集的细胞重叠在一起，说明batch effect很小。
+
+## 然后我们run tSNE
+pbmc <- RunTSNE(object = pbmc,
+                dims.use = 1:10,
+                do.fast = TRUE)
+TSNEPlot(object = pbmc, do.label = TRUE)  # 我们看到两团细胞还是overlap在一起的
+
+## 最后我们将两组数据分开，看一下tSNE，不难发现分布非常一致，但是8k的确实比4k的细胞数多
+my_4k_cell <- grep("^4K", row.names(pbmc@meta.data), value = TRUE)
+my_8k_cell <- grep("^8K", row.names(pbmc@meta.data), value = TRUE)
+my_4k_tsne <- TSNEPlot(object = pbmc, do.label = TRUE, cells.use = my_4k_cell, do.return = TRUE)
+my_8k_tsne <- TSNEPlot(object = pbmc, do.label = TRUE, cells.use = my_8k_cell, do.return = TRUE)
+plot_grid(
+  my_4k_tsne,
+  my_8k_tsne
+)
 
 
 #=============================================================================================
