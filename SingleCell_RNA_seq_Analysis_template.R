@@ -23,21 +23,22 @@
 library(Seurat) # the seurat version now I am using is 2.3.1
 library(dplyr)
 library(Matrix)
+library(ggplot2)
 
 
 
 ### set working directory
-setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5')
+setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_3_endo_mRNA_GSM3032164_P7endo')
 ### 根据表达矩阵构建seurat对象：加载数据前需要将文件夹中的三个文件分别命名为“matrix.mtx", "barcodes.tsv", "genes.tsv"，需要准备好3个输入文件
-list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5") # 通过这个函数查看读入文件夹内包含的文件
+list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_3_endo_mRNA_GSM3032164_P7endo") # 通过这个函数查看读入文件夹内包含的文件
 ### 这三个文件，必须按照上述命名要求命名，后面Read10X()会自动识别。
 
 ### Load the Pancreas_1_mRNA_GSM2830058_P5 dataset
-pancreas_1.data <- Read10X(data.dir = "/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_1_mRNA_GSM2830058_P5")
+pancreas_1.data <- Read10X(data.dir = "/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_3_endo_mRNA_GSM3032164_P7endo")
 ### 载入数据后一定注意查看下object!
 pancreas_1.data # 注意这一步仅仅是载入数据，还没有构建Seurat对象; 上面一步相当于就是把表达矩阵读进来了，metadata还没用整合进来
 str(pancreas_1.data) # 对于复杂的组学数据，使用str()函数可以更清楚的了解数据的组成，并且方便后续数据操作
-pancreas_1.data@Dim
+pancreas_1.data@Dim    # 查看一下矩阵的维度。斑马鱼dataset注释的基因是28283个
 length(pancreas_1.data@Dimnames[[1]]) # 每一个gene都是用gene_symbol来表示的，Dimnames下的第一个对象是基因名
 length(pancreas_1.data@Dimnames[[2]]) # 每一个细胞，我们用对应的barcode来表示，Dimnames下的第二个对象是cell barcode
 
@@ -55,17 +56,19 @@ dense.size / sparse.size # 稀疏矩阵比密集矩阵压缩了近20倍的空间
 # Initialize the Seurat object with the raw (non-normalized data).  Keep all genes expressed in >= 3 cells (~0.1% of the data). 
 # Keep all cells with at least 200 detected genes
 # 注意Seurat设定了自己的object，就叫做Seurat object
-pancreas_1 <- CreateSeuratObject(raw.data = pancreas_1.data, min.cells = 3, min.genes = 200, 
+pancreas_1 <- CreateSeuratObject(raw.data = pancreas_1.data, min.cells = 3, min.genes = 200,  # 注意过滤条件
                                  project = "10X_Pancreas_1")
-pancreas_1 # 构建对象后常规查看一下对象的内容，还是强烈建议用str()函数来查看
-str(pancreas_1)  # pancreas_1@raw.data就相当于Read10X读入的pancreas_1.data
+pancreas_1 # 构建对象后常规查看一下对象的内容，我们看到一部分基因和细胞被过滤掉了
+str(pancreas_1)  # 还是强烈建议用str()函数来查看完整信息，pancreas_1@raw.data就相当于Read10X读入的pancreas_1.data
 rownames(pancreas_1@raw.data); rownames(pancreas_1@data) # 这两句代码都可以用来查看gene_symbol
 
 ###################################### Quality control ###############################################
-mito.genes <- grep(pattern = "^MT-", x = rownames(x = pancreas_1@data), value = TRUE) # 挑取MT-开头的gene_symbol，是线粒体基因，可以用于归一化
+mito.genes <- grep(pattern = "^mt-", x = rownames(x = pancreas_1@data), value = TRUE) # 挑取mt-开头的gene_symbol，是线粒体基因，可以用于归一化
+mito.genes # 一共有13个基因是线粒体基因
 ## 当然在这个数据集中，mito.genes为空
 percent.mito <- Matrix::colSums(pancreas_1@raw.data[mito.genes, ]) / Matrix::colSums(pancreas_1@raw.data) # 计算每一个样本中线粒体基因在所有counts中的比例
-percent.mito; table(percent.mito) # 在这个数据集中，因为线粒体基因为空，所以所有的比例都为0
+head(percent.mito)
+summary(percent.mito) # 我们看一下线粒体基因所占的比例的分布
 
 # AddMetaData: adds columns to object@meta.data, and is a great place to stash QC stats。可以将计算得到的percent.mito追加到Seurat对象的metadata里面
 str(pancreas_1)
@@ -74,8 +77,12 @@ str(pancreas_1) # 比较前后的差别，发现pancreas_1对象下的meta.data�
 class(pancreas_1@meta.data$nGene); class(pancreas_1@meta.data$nUMI);class(pancreas_1@meta.data$percent.mito)
 pancreas_1@meta.data # 本质是一个矩阵
 VlnPlot(object = pancreas_1, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+ggplot(pancreas_1@meta.data, aes(nUMI, percent.mito)) +
+  geom_point(size = 0.5) +
+  geom_hline(yintercept = 0.09, linetype = "dashed", colour = "red")
 ## 我们查看一下平均的nGene, nUMI, percent.mito和中位数nGene, nUMI, percent.mito
-apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, mean); apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, median)
+apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, mean)   # 统计各参数的平均值
+apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, median)   # 统计各参数的中位数
 
 # GenePlot is typically used to visualize gene-gene relationships, but can be used for anything calculated by the object,
 # i.e. columns in object@meta.data, PC scores etc.  For the PBMC dataset (not this one),since there is a rare subset of cells with an outlier level of high 
@@ -87,10 +94,10 @@ GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "nGene")
 
 # We filter out cells that have unique gene counts over 2,500 or less than 200 Note that low.thresholds and high.thresholds are 
 # used to define a 'gate'.  -Inf and Inf should be used if you don't want a lower or upper
-# threshold. "可以看到这里选择的QC标准是 200~2500基因范围内，以及线粒体基因表达占比小于5%的才保留。"
+# threshold. "可以看到这里选择的QC标准是 200~2500基因范围内，以及线粒体基因表达占比小于5%（这个值是人为设定的，也可以是9%等等）的才保留。"
 pancreas_1 <- FilterCells(object = pancreas_1, subset.names = c("nGene", "percent.mito"),    # 使用FilterCells()函数来过滤细胞
-                          low.thresholds = c(200, -Inf), high.thresholds = c(Inf, 0.05))     # 实际上针对这个数据集，我仅仅使用nGene，过滤低于200个gene的细胞
-
+                          low.thresholds = c(200, -Inf), high.thresholds = c(2500, 0.09))     
+## 针对这个数据集，我使用nGene和线粒体的比例作为过滤条件，过滤低于200个gene和高于2500个gene的细胞，同时过滤线粒体比例超过9%的细胞
 
 ###################################### Normalization ###############################################
 # "这里默认根据细胞测序文库大小进行normalization，简单的做一个log转换即可。" 我们来解读下这句话的含义：
@@ -111,9 +118,9 @@ summary(pancreas_1@data[,1]) # 比较一下normalize前后的数据分布
 par(mfrow = c(1, 1)) 
 ## 寻找HVG，我们认为表达量在一定程度以上，同时样本(细胞)之间有一定差异的基因，是可以用于后续分析(cluster, cell type identification)的
 ## 其余的基因，会成为噪声，需要滤除
-length(x = pancreas_1@var.genes)
+length(x = pancreas_1@var.genes)  # 在执行FindVariableGenes()之前，var.gene这个slot还是空着的
 pancreas_1 <- FindVariableGenes(object = pancreas_1, mean.function = ExpMean,   # 这一步稍微有点费时，尤其是出图加text
-                                dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+                                dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.8)   # y.cutoff = 0.8属于条件比较宽的
 ## 同样，执行完上述函数，会在对象中增加var.genes这个对象
 length(x = pancreas_1@var.genes)
 
@@ -126,6 +133,7 @@ length(x = pancreas_1@var.genes)
 # (as provided by Drop-seq tools for Drop-seq data), the number of detected molecules, mitochondrial gene expression and cell cycle. 
 # Here we regress on the number of detected molecules per cell/percentage of mitochondria genes.
 ## 校正混杂因素(可以认为设定，比如batch)，同时对数据进行scale(数值减去平均值，然后除以对应的标准差，得到z-score)
+## 注意，这一步也是为了后续PCA和tSNE做的准备工作，因为PCA过程中必须要有centering和scaling两步，减少outlier的影响
 str(pancreas_1)
 pancreas_1 <- ScaleData(object = pancreas_1, vars.to.regress = c("nUMI", "percent.mito")) # 这一步比较费时(好几分钟，第一步regression，第二步scale data matrix)
 str(pancreas_1) # scale.data从Null变成了校正后的结果
@@ -159,7 +167,7 @@ PCHeatmap(object = pancreas_1, pc.use = 1:12, cells.use = 500, do.balanced = TRU
 # repeating this procedure. We identify significant PCs as those who have a strong enrichment of low p-value genes:
 # 可以用JackStrawPlot可视化看看哪些主成分可以进行下游分析。这一步很耗时
 pancreas_1 <- JackStraw(object = pancreas_1, num.replicate = 100) 
-JackStrawPlot(object = pancreas_1, PCs = 1:12) # 挑选黑色实线在虚线上方的部分
+JackStrawPlot(object = pancreas_1, PCs = 1:12) # 图形化展示12个主成分，挑选黑色实线在虚线上方的部分的主成分为有意义的主成分
 ## The JackStrawPlot function provides a visualization tool for comparing the distribution of p-values for each PC with a uniform 
 ## distribution (dashed line). Significant PCs will show a strong enrichment of genes with low p-values (solid curve above the dashed 
 ## line). In this case it appears that PCs 1-8 are significant.
@@ -168,7 +176,7 @@ JackStrawPlot(object = pancreas_1, PCs = 1:12) # 挑选黑色实线在虚线上�
 # 当然，也可以用最经典的碎石图来确定主成分。这一步很耗时。A more ad hoc method for determining which PCs to use is to look at 
 # a plot of the standard deviations of the principle components and draw your cutoff where there is a clear elbow in the graph. 
 # This can be done with PCElbowPlot.
-PCElbowPlot(object = pancreas_1)
+PCElbowPlot(object = pancreas_1)  # 对于endo的数据集，我们挑选15个PC
 
 
 # 这个确定主成分是非常有挑战性的: - The first is more supervised, exploring PCs to determine relevant sources of heterogeneity, 
@@ -201,7 +209,7 @@ PrintCalcParams(object = pancreas_1, calculation = 'RunPCA')
 pancreas_1 <- RunTSNE(object = pancreas_1, dims.use = 1:15, do.fast = TRUE)
 # note that you can set do.label=T to help label individual clusters 
 TSNEPlot(object = pancreas_1, do.label=T)
-save(pancreas_1, file = "pancreas_1.rData")
+save(pancreas_1, file = "pancreas_1_endo.rData")
 
 
 
@@ -219,10 +227,10 @@ cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 1, min.pct = 0.25
 print(x = head(x = cluster1.markers, n = 5))
 
 # find markers of each cluster
-for (i in 0:15) {
+for (i in 0:13) {
   cluster.markers <- FindMarkers(object = pancreas_1, ident.1 = i, min.pct = 0.25)
   print(paste("marker of cluster: ",i ))
-  print(x = head(x = cluster.markers, n = 50))
+  print(x = head(x = cluster.markers, n = 20))
 }
 
 # find all markers distinguishing cluster 5 from clusters 0 and 3
@@ -256,7 +264,7 @@ FeaturePlot(object = pancreas_1,
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 # In PCA plot
 FeaturePlot(object = pancreas_1, 
-            features.plot = c('nf2a','nf2b','mitfb','cdc42'), 
+            features.plot = c('tmem196b'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
@@ -3675,7 +3683,13 @@ pheatmap::pheatmap(t(assigned$scores))
 
 
 
+#===============================================================================================================
+#
+#                          Velocyto on droplet data (Harvard University, 2017)
+#
+#===============================================================================================================
 
-
-
+# velocyto.R安装有问题，我是根据这个帖子更改的，修改了某个文件后，不能用devtools下载github上的文件了
+# https://github.com/velocyto-team/velocyto.R/issues/2
+# 看一下这个文件的内容：~/.R/Makevars
 
