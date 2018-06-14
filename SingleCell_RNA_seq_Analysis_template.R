@@ -33,14 +33,51 @@ setwd('/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_3_endo_mRNA_GSM303216
 list.files("/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_3_endo_mRNA_GSM3032164_P7endo") # 通过这个函数查看读入文件夹内包含的文件
 ### 这三个文件，必须按照上述命名要求命名，后面Read10X()会自动识别。
 
+### 做完这一步，建议回到对一个文件夹，进入终端(terminal)，使用head命令查看matrix.mtx
+#### matrix.mtx is a MatrixMarket file; see http://math.nist.gov/MatrixMarket/formats.html
+#### only non-zero entries are stored in the file 这种格式的矩阵文件只记录非0的entry
+#### comments start with a %, like LaTeX
+#### the first line indicates the total number of rows, columns, and entries 第一行显示行数和列数，以及entry数，和dim()是一样的
+#### the following lines provide a row and column number and the value at that coordinate 之后的每一行给出的是对应行和对应列以及对应的表达量
+
 ### Load the Pancreas_1_mRNA_GSM2830058_P5 dataset
 pancreas_1.data <- Read10X(data.dir = "/Users/mijiarui/Nature_Biotechnology_Paper/Pancreas_3_endo_mRNA_GSM3032164_P7endo")
+
+
 ### 载入数据后一定注意查看下object!
-pancreas_1.data # 注意这一步仅仅是载入数据，还没有构建Seurat对象; 上面一步相当于就是把表达矩阵读进来了，metadata还没用整合进来
+pancreas_1.data[1:6,1:6] # 注意这一步仅仅是载入数据，还没有构建Seurat对象; 上面一步相当于就是把表达矩阵读进来了，metadata还没用整合进来
+class(pancreas_1.data)    # https://stat.ethz.ch/R-manual/R-devel/library/Matrix/html/dgTMatrix-class.html
+dim(pancreas_1.data)
+
 str(pancreas_1.data) # 对于复杂的组学数据，使用str()函数可以更清楚的了解数据的组成，并且方便后续数据操作
 pancreas_1.data@Dim    # 查看一下矩阵的维度。斑马鱼dataset注释的基因是28283个
 length(pancreas_1.data@Dimnames[[1]]) # 每一个gene都是用gene_symbol来表示的，Dimnames下的第一个对象是基因名
 length(pancreas_1.data@Dimnames[[2]]) # 每一个细胞，我们用对应的barcode来表示，Dimnames下的第二个对象是cell barcode
+
+summary(colSums(pancreas_1.data)) # summary of total expression per single cell
+# check how many genes have at least one transcript in each cell
+at_least_one <- apply(pancreas_1.data, 2, function(x) sum(x>0))
+hist(at_least_one, breaks = 100,
+     main = "Distribution of detected genes",
+     xlab = "Genes with at least one tag")
+
+hist(colSums(pancreas_1.data),
+     breaks = 100, main = "Expression sum per cell",
+     xlab = "Sum expression")
+
+# 我们后续要进行数据过滤，保留基因（比如至少在3个细胞当中表达的gene）和细胞（至少有200个被探测到的细胞）
+# manually check the number of genes detected in three or more cells
+# a lot of genes are not detected in 3 or more cells
+tmp <- apply(pancreas_1.data, 1, function(x) sum(x>0))
+table(tmp>=3)
+
+# all cells have at least 200 detected genes
+keep <- tmp>=3
+tmp <- pancreas_1.data[keep,]
+at_least_one <- apply(tmp, 2, function(x) sum(x>0)>=200)
+summary(at_least_one)
+tmp <- tmp[,at_least_one]
+dim(tmp)
 
 ### Examine the memory savings between regular and sparse matrices
 ### 这一步是可选项，分别查看密集矩阵和稀疏矩阵所占用的空间，大致可以判断矩阵当中0的数量，使用object.size()函数
@@ -58,38 +95,54 @@ dense.size / sparse.size # 稀疏矩阵比密集矩阵压缩了近20倍的空间
 # 注意Seurat设定了自己的object，就叫做Seurat object
 pancreas_1 <- CreateSeuratObject(raw.data = pancreas_1.data, min.cells = 3, min.genes = 200,  # 注意过滤条件
                                  project = "10X_Pancreas_1")
-pancreas_1 # 构建对象后常规查看一下对象的内容，我们看到一部分基因和细胞被过滤掉了
+pancreas_1 # 构建对象后常规查看一下对象的内容，我们看到一部分基因和细胞被过滤掉了；统计结果和上面人工计算的结果稍有出入
+class(pancreas_1)
+slotNames(pancreas_1)
 str(pancreas_1)  # 还是强烈建议用str()函数来查看完整信息，pancreas_1@raw.data就相当于Read10X读入的pancreas_1.data
 rownames(pancreas_1@raw.data); rownames(pancreas_1@data) # 这两句代码都可以用来查看gene_symbol
+## Seurat的tutorial指出Seurat会自动帮我们计算nGene和nUMI。
+## nUMI的计算方法是num.mol <- colSums(object.raw.data),每一个转录本对应一个UMI
+## nGene的计算方法是num.genes <- colSums(object.raw.data > is.expr) ，其中is.expr是等于0的一个变量
 
 ###################################### Quality control ###############################################
+## 非常常见的QC步骤是根据线粒体gene的转录本在所有转录本中所占的比例；这是基于一个生物学原理，即如果细胞破坏裂解了，处在
+## 细胞质中的RNA会损失，然后线粒体中的RNA因为包绕在线粒体的细胞器膜中，并没有收到损伤，所以得到相对完整的保留。
 mito.genes <- grep(pattern = "^mt-", x = rownames(x = pancreas_1@data), value = TRUE) # 挑取mt-开头的gene_symbol，是线粒体基因，可以用于归一化
-mito.genes # 一共有13个基因是线粒体基因
+mito.genes; length(mito.genes) # 一共有13个基因是线粒体基因
 ## 当然在这个数据集中，mito.genes为空
 percent.mito <- Matrix::colSums(pancreas_1@raw.data[mito.genes, ]) / Matrix::colSums(pancreas_1@raw.data) # 计算每一个样本中线粒体基因在所有counts中的比例
 head(percent.mito)
 summary(percent.mito) # 我们看一下线粒体基因所占的比例的分布
 
+# check out the meta data
+head(pancreas_1@meta.data) # 本质是一个矩阵
 # AddMetaData: adds columns to object@meta.data, and is a great place to stash QC stats。可以将计算得到的percent.mito追加到Seurat对象的metadata里面
 str(pancreas_1)
 pancreas_1 <- AddMetaData(object = pancreas_1, metadata = percent.mito, col.name = "percent.mito")
 str(pancreas_1) # 比较前后的差别，发现pancreas_1对象下的meta.data增加了percent.mito这个元素，其中nGene, nUMI和percent.mito都是向量
 class(pancreas_1@meta.data$nGene); class(pancreas_1@meta.data$nUMI);class(pancreas_1@meta.data$percent.mito)
-pancreas_1@meta.data # 本质是一个矩阵
+head(pancreas_1@meta.data)
 VlnPlot(object = pancreas_1, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
 ggplot(pancreas_1@meta.data, aes(nUMI, percent.mito)) +
   geom_point(size = 0.5) +
   geom_hline(yintercept = 0.09, linetype = "dashed", colour = "red")
 ## 我们查看一下平均的nGene, nUMI, percent.mito和中位数nGene, nUMI, percent.mito
-apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, mean)   # 统计各参数的平均值
-apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, median)   # 统计各参数的中位数
+apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, function(x) round(mean(x),4))  # 统计各参数的平均值
+apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, function(x) round(median(x),4))   # 统计各参数的中位数
 
-# GenePlot is typically used to visualize gene-gene relationships, but can be used for anything calculated by the object,
+# GenePlot is typically used to visualize gene-gene relationships, but can be used for anything calculated by the Seurat object,
 # i.e. columns in object@meta.data, PC scores etc.  For the PBMC dataset (not this one),since there is a rare subset of cells with an outlier level of high 
 # mitochondrial percentage and also low UMI content, we filter these as well
 par(mfrow = c(1, 2))
 GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "percent.mito") # GenePlot是专门用来画散点图的
 GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "nGene")
+## Left: There are some clear outliers in mitochondrial RNA vs. the poly-A selected RNA. Right: The more unique molecules 
+## captured, the more genes that are probed.
+
+GenePlot(object = pancreas_1, gene1 = "her15.1", gene2 = "epcam", 
+         cex.use = 1, col.use = 'red', pch.use = '.')   # 在这边也可以check两个gene之间表达的相关性
+GenePlot(object = pancreas_1, gene1 = "ins", gene2 = "sst2", 
+         cex.use = 1, col.use = 'blue', pch.use = '.') # 我们使用rownames(pancreas_1@raw.data)来挑选gene
 
 
 # We filter out cells that have unique gene counts over 2,500 or less than 200 Note that low.thresholds and high.thresholds are 
