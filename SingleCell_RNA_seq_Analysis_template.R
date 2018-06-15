@@ -145,38 +145,75 @@ GenePlot(object = pancreas_1, gene1 = "ins", gene2 = "sst2",
          cex.use = 1, col.use = 'blue', pch.use = '.') # 我们使用rownames(pancreas_1@raw.data)来挑选gene
 
 
+# 下一步是对细胞的筛选，根据每个细胞检测到的gene数和每个细胞的线粒体转录本的比例
 # We filter out cells that have unique gene counts over 2,500 or less than 200 Note that low.thresholds and high.thresholds are 
 # used to define a 'gate'.  -Inf and Inf should be used if you don't want a lower or upper
 # threshold. "可以看到这里选择的QC标准是 200~2500基因范围内，以及线粒体基因表达占比小于5%（这个值是人为设定的，也可以是9%等等）的才保留。"
+
+# manual check; I already know all cells have >200 genes
+table(pancreas_1@meta.data$percent.mito < 0.09 & pancreas_1@meta.data$nGene<2500)
+
 pancreas_1 <- FilterCells(object = pancreas_1, subset.names = c("nGene", "percent.mito"),    # 使用FilterCells()函数来过滤细胞
-                          low.thresholds = c(200, -Inf), high.thresholds = c(2500, 0.09))     
+                          low.thresholds = c(200, -Inf), high.thresholds = c(2500, 0.09))  
+pancreas_1   # 我们看到手工check的结果和使用FilterCells()是一样的。
+
 ## 针对这个数据集，我使用nGene和线粒体的比例作为过滤条件，过滤低于200个gene和高于2500个gene的细胞，同时过滤线粒体比例超过9%的细胞
 
 ###################################### Normalization ###############################################
+# 数据的normalization的目的是让细胞之间可以比较，Seurat当中内嵌的数据归一化方法是log normalization
+# 就是将基因除以这个细胞的total expression，然后scale by 10000，再log转换，很类似于CPM后在log转换
+# 这种归一化方法是到目前位置Seurat唯一内嵌的方法，但是document里面也明确指出不久后更多的方法会被囊括进来。
+
 # "这里默认根据细胞测序文库大小进行normalization，简单的做一个log转换即可。" 我们来解读下这句话的含义：
 # 出自hemberg的注解：“After removing unwanted cells from the dataset, the next step is to normalize the data. By default, we employ 
 # a global-scaling normalization method LogNormalize that normalizes the gene expression measurements for each cell by the total 
 # expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result”
 # 其意思是，先针对测序文库的大小进行normalization，然后乘以一个scaling factor(非常类似于CPM，不过默认值是10000), 然后在对这个数值进行log转换
 # 注意，这种类似于CPM的数据校正方法，并没有对基因的长度进行校正
+
+## Normalization前
 pancreas_1@raw.data[,1]
 summary(pancreas_1@raw.data[,1])
+hist(colSums(pancreas_1@data),
+     breaks = 100,
+     main = "Total expression before normalisation",
+     xlab = "Sum of expression")
+
+## Normalization
 pancreas_1 <- NormalizeData(object = pancreas_1, normalization.method = "LogNormalize",  # 执行完这个函数，会在pancreas_1这个对象中增加归一化后的信息
                             scale.factor = 10000)
+
+## Normalization后
 str(pancreas_1)  # 增加了NormalizedData
 summary(pancreas_1@data[,1]) # 比较一下normalize前后的数据分布
-
+hist(colSums(pancreas_1@data),
+     breaks = 100,
+     main = "Total expression before normalisation",
+     xlab = "Sum of expression")
 
 ############################# Detection of variable genes across the single cells ###########################
 par(mfrow = c(1, 1)) 
 ## 寻找HVG，我们认为表达量在一定程度以上，同时样本(细胞)之间有一定差异的基因，是可以用于后续分析(cluster, cell type identification)的
 ## 其余的基因，会成为噪声，需要滤除
 length(x = pancreas_1@var.genes)  # 在执行FindVariableGenes()之前，var.gene这个slot还是空着的
+
+## FindVariableGenes()计算每个gene在不同细胞的平均表达量和散度(dispersion，z-score)
+## The FindVariableGenes() function calculates the average expression and dispersion for each gene, places these genes into 
+## bins, and then calculates a z-score for dispersion within each bin. I interpret that as take each gene, get the average 
+## expression and variance of the gene across the 2,638 cells, categorise genes into bins (default is 20) based on their 
+## expression and variance, and finally normalise the variance in each bin. 
+## 以下参数是针对UMI data，对应不同的数据集，需要使用不同的参数。
+pancreas_1@var.genes  # the variable genes slot is empty before the analysis
+par(mfrow = c(1,1))
 pancreas_1 <- FindVariableGenes(object = pancreas_1, mean.function = ExpMean,   # 这一步稍微有点费时，尤其是出图加text
                                 dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.8)   # y.cutoff = 0.8属于条件比较宽的
+## 给出的plot中，x轴是pancreas_1@hvg.info$gene.mean，y轴是pancreas_1@hvg.info$gene.dispersion.scaled.
 ## 同样，执行完上述函数，会在对象中增加var.genes这个对象
 length(x = pancreas_1@var.genes)
+head(pancreas_1@var.genes)   # vector of variable genes
 
+# mean and variance of genes are stored pancreas_1@hvg.info
+head(pancreas_1@hvg.info)
 
 ############################# Scaling the data and removing unwanted sources of variation #########################
 # "需要去除那些technical noise,batch effects, or even biological sources of variation (cell cycle stage)"
@@ -185,32 +222,46 @@ length(x = pancreas_1@var.genes)
 # reduction and clustering. Seurat can regress out cell-cell variation in gene expression driven by batch, cell alignment rate 
 # (as provided by Drop-seq tools for Drop-seq data), the number of detected molecules, mitochondrial gene expression and cell cycle. 
 # Here we regress on the number of detected molecules per cell/percentage of mitochondria genes.
+## Seurat使用linear model，基于用户定义的变量来预测基因表达量，从而去除混杂因素，这些混杂因素包括batch effect和cell cycle stage。
 ## 校正混杂因素(可以认为设定，比如batch)，同时对数据进行scale(数值减去平均值，然后除以对应的标准差，得到z-score)
 ## 注意，这一步也是为了后续PCA和tSNE做的准备工作，因为PCA过程中必须要有centering和scaling两步，减少outlier的影响
 str(pancreas_1)
+pancreas_1@scale.data   # slot is empty before running ScaleData()
 pancreas_1 <- ScaleData(object = pancreas_1, vars.to.regress = c("nUMI", "percent.mito")) # 这一步比较费时(好几分钟，第一步regression，第二步scale data matrix)
-str(pancreas_1) # scale.data从Null变成了校正后的结果
+str(pancreas_1) # scale.data从Null变成了校正后的结果，存放了实际表达量与线性模型的值的差别，这可以用来进行数据降维和聚类
 summary(pancreas_1@scale.data[,1])
+class(pancreas_1@scale.data)
+pancreas_1@scale.data[1:6,1:6]
 
 ############################## 线性降维Linear dimensionality reduction ##############################
 ## 现在降维和可视化一般都是两步法（其实是三步法），第一步是上面select HVG，第二步PCA，将高维数据降成十几维，滤除差异贡献度很小的维度
 ## 以进一步去噪声，然后使用tSNE; 在进行PCA分析的时候，一般都是挑选HVG，同时需要进行centering和scaling两步的，比较好的是上面的ScaleData
 ## 已经帮我们计算得到了这部分var.genes。具体原理可以见StatQuest对PCA的更新版视频（2018-04）
+## 即使我们挑选了一批gene出来，但是相当一部分这些gene在single cell的层面是not interesting的，因为它们单个可解释的变异度很小。
+## 使用PCA的一个好处就是综合很多gene，得到解释变异度最大的PC。RunPCA默认针对@var.gene进行PCA分析，当然也可以私人订制。
 pancreas_1 <- RunPCA(object = pancreas_1, pc.genes = pancreas_1@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5) # 增加了RunPCA这个对象
+PrintPCAParams(pancreas_1)
+PrintPCA(object = pancreas_1, pcs.print = 1:2, genes.print = 5, use.full = FALSE)  # 显示对各个PC贡献度最大的正负向gene。
 ### 每个PC实际给出了10个gene，应该是PC正负向贡献度最大的各5个gene(判断)
 
 ## 对PCA分析结果可以进行一系列的可视化： PrintPCA, VizPCA, PCAPlot, and PCHeatmap
 par(mar = c(5,5,3,2))
-VizPCA(object = pancreas_1, pcs.use = 1:2) # 通过VizPCA，也可以确认上述的判断
-PCAPlot(object = pancreas_1, dim.1 = 1, dim.2 = 2)
+VizPCA(object = pancreas_1, pcs.use = 1:2) # 通过VizPCA，也可以确认上述的判断；visualise top genes associated with principal components
+PCAPlot(object = pancreas_1, dim.1 = 1, dim.2 = 2) # cells are coloured by their identity class according to pancreas_1@ident.
+pancreas_1@ident
 
+# PCA是基于most variable genes，ProjectPCA对每个gene进行打分，这是基于gene与calculated component的correlation。
+# 这一步的好处是，能够找到那些非variable gene，但是与细胞的异质性关系密切的gene。
 # ProjectPCA scores each gene in the dataset (including genes not included in the PCA) based on their correlation 
 # with the calculated components. Though we don't use this further here, it can be used to identify markers that 
 # are strongly correlated with cellular heterogeneity, but may not have passed through variable gene selection. 
 # The results of the projected PCA can be explored by setting use.full=T in the functions above
 pancreas_1 <- ProjectPCA(object = pancreas_1, do.print = T)
 
-## 最重要的就是 PCHeatmap 函数了
+## 最重要的就是 PCHeatmap 函数了，默认是绘制第一个PC，显示在指定的cells.use的细胞中的30个gene。如果我们人为设定cells.use
+## 为一个确定的数值，函数会自动寻找最extreme的细胞用于画图，在大型数据集中会大大加快绘图速度。
+## 绘制第一张图会费一点功夫，而且会有warning message，直接忽略。
+PCHeatmap(object = pancreas_1, pc.use = 1, do.balanced = TRUE, label.columns = FALSE)
 PCHeatmap(object = pancreas_1, pc.use = 1, cells.use = 500, do.balanced = TRUE, label.columns = FALSE)
 PCHeatmap(object = pancreas_1, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE, use.full = F)
 
@@ -218,9 +269,13 @@ PCHeatmap(object = pancreas_1, pc.use = 1:12, cells.use = 500, do.balanced = TRU
 # 主成分分析结束后需要确定哪些主成分所代表的基因可以进入下游分析，这里可以使用JackStraw做重抽样分析(默认每次重抽样1%的数据)。
 # Seurat randomly permutes a subset of the data (1% by default) and reruns PCA, constructing a null distribution of gene scores by 
 # repeating this procedure. We identify significant PCs as those who have a strong enrichment of low p-value genes:
+# JackStraw返回的结果是每个gene在每个PC当中的p-value
 # 可以用JackStrawPlot可视化看看哪些主成分可以进行下游分析。这一步很耗时
+system.time(
 pancreas_1 <- JackStraw(object = pancreas_1, num.replicate = 100) 
-JackStrawPlot(object = pancreas_1, PCs = 1:12) # 图形化展示12个主成分，挑选黑色实线在虚线上方的部分的主成分为有意义的主成分
+)
+JackStrawPlot(object = pancreas_1, PCs = 1:12)
+## 图形化展示12个主成分，有意义的主成分是那些能够富集较多low p-value gene的主成分，solid curve above the dashed line
 ## The JackStrawPlot function provides a visualization tool for comparing the distribution of p-values for each PC with a uniform 
 ## distribution (dashed line). Significant PCs will show a strong enrichment of genes with low p-values (solid curve above the dashed 
 ## line). In this case it appears that PCs 1-8 are significant.
@@ -238,9 +293,12 @@ PCElbowPlot(object = pancreas_1)  # 对于endo的数据集，我们挑选15个PC
 # is commonly used, and can be calculated instantly.
 
 ############################################### Cluster the cells #################################################
+# Seurat的clustering是基于graph-based clustering approach inspired by SNN-Cliq和PhenoGraph；这个算法相当的technical
 # save.SNN = T saves the SNN so that the clustering algorithm can be rerun using the same graph
 # but with a different resolution value (see docs for full details)
 str(pancreas_1)
+## 在这个算法中，resolution参数能够校正granularity of the clustering, 其数值越高能够分出的cluster就越多；在3000个细胞左右的数据集中
+### resolution设定在0.6-1.2左右往往能给出不错的结果。cluster信息是保存在@ident这个slot里面，还记得PCA颜色么！！
 pancreas_1 <- FindClusters(object = pancreas_1, reduction.type = "pca", dims.use = 1:15, resolution = 0.6, print.output = 0, save.SNN = TRUE)
 str(pancreas_1) # 增加了FindClusters这个元素
 pancreas_1@ident # The clusters are saved in the object@ident slot(向量).具体来看每一个细胞被分到哪一个cluster
@@ -259,6 +317,7 @@ PrintCalcParams(object = pancreas_1, calculation = 'RunPCA')
 # 同样也是一个函数，这个结果也可以像PCA分析一下挑选合适的PC进行下游分析。
 # 这一步很耗时，可以保存该对象，便于重复，以及分享交流 （出图时间很长)
 # 我们在进行tSNE计算的时候，倾向使用pc，这样噪声比较小；当然，在函数中也可以使用genes.use这个参数来使用z-scaled的gene表达来计算
+# 而且作者建议使用上面clustering相同的PC
 pancreas_1 <- RunTSNE(object = pancreas_1, dims.use = 1:15, do.fast = TRUE)
 # note that you can set do.label=T to help label individual clusters 
 TSNEPlot(object = pancreas_1, do.label=T)
