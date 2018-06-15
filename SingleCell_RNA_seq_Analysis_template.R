@@ -326,13 +326,9 @@ save(pancreas_1, file = "pancreas_1_endo.rData")
 
 
 ############################### Finding differentially expressed genes (cluster biomarkers) ###########################
-# 差异分析在seurat包里面被封装成了函数：FindMarkers，有一系列参数可以选择，然后又4种找差异基因的算法：
+# 差异分析在seurat包里面被封装成了函数：FindMarkers()
 
-# 方法一： ROC test (“roc”)
-# 方法二： t-test (“t”)
-# 方法三： LRT test based on zero-inflated data (“bimod”, default)
-# 方法四： LRT test based on tobit-censoring models (“tobit”)
-
+# 默认设置是给出positive和negative的markers，one cluster compared against genes in all other cells
 
 # find all markers of cluster 1
 cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 1, min.pct = 0.25)
@@ -353,17 +349,54 @@ print(x = head(x = cluster5.markers, n = 5))
 # find markers for every cluster compared to all remaining cells, report only the positive ones (this step takes some time!)
 pancreas_1.markers <- FindAllMarkers(object = pancreas_1, only.pos = TRUE, min.pct = 0.25, thresh.use = 0.25)
 pancreas_1.markers %>% group_by(cluster) %>% top_n(2, avg_logFC)
+# A tibble: 16 x 6
+# Groups:   cluster [8]
 pancreas_1.markers $cluster
 
+# FindMarkers，有一系列参数可以选择，然后又4种找差异基因的算法，使用test.use参数进行设置
+# 方法一： ROC test (“roc”)
+# 方法二： t-test (“t”)
+# 方法三： LRT test based on zero-inflated data (“bimod”, default)
+# 方法四： LRT test based on tobit-censoring models (“tobit”)
 # 值得注意的是： The ROC test returns the ‘classification power’ for any individual marker (ranging from 0 - random, to 1 - perfect).
-# 所以可以用来衡量找到的marker是否可靠
-cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "roc", only.pos = TRUE)
+# 所以可以用来衡量找到的marker是否可靠，我们来比较一下使用以上四种方法找到的cluster1的marker
+cluster1.markers_bimod <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "bimod", only.pos = TRUE)
+cluster1.markers_roc <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "roc", only.pos = TRUE)
+cluster1.markers_t <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "t", only.pos = TRUE)
+cluster1.markers_tobit <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "tobit", only.pos = TRUE)
+
+# identical set of genes
+dim(cluster1.markers_bimod); head(cluster1.markers_bimod)
+dim(cluster1.markers_roc); head(cluster1.markers_bimod)
+dim(cluster1.markers_t); head(cluster1.markers_bimod)
+dim(cluster1.markers_tobit); head(cluster1.markers_bimod)
+
+# the rankings of the genes are quite similar between the methods
+my_gene <- row.names(cluster1.markers_bimod)
+a <- 1:length(my_gene)
+b <- match(my_gene, row.names(cluster1.markers_roc))
+c <- match(my_gene, row.names(cluster1.markers_t))
+d <- match(my_gene, row.names(cluster1.markers_tobit))
+
+# bimod vs. bimod
+cor(a, a, method = "spearman")
+# bimod vs. roc
+cor(a, b, method = "spearman")
+# bimod vs. t
+cor(a, c, method = "spearman")
+# bimod vs. tobit
+cor(a, d, method = "spearman")
+
+par(mfrow=c(2,2))
+barplot(a, main = 'bimod')
+barplot(b, main = 'roc')
+barplot(c, main = 't')
+barplot(d, main = 'tobit')
 
 # 同时，该包提供了一系列可视化方法来检查差异分析的结果的可靠性：
-
 # VlnPlot (shows expression probability distributions across clusters)
 # FeaturePlot (visualizes gene expression on a tSNE or PCA plot) are our most commonly used visualizations
-# JoyPlot, CellPlot, and DotPlot
+# JoyPlot, CellPlot, and DotPlot 来试一下
 
 VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2'))
 
@@ -374,6 +407,11 @@ VlnPlot(object = pancreas_1, features.plot = c('nf2a','nf2b','mitfb','cdc42'), u
 FeaturePlot(object = pancreas_1, 
             features.plot = c('nf2a','nf2b','mitfb','cdc42'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
+
+FeaturePlot(object = pancreas_1,          # 显示某个cluster的marker gene，很不错的方法
+            features.plot = head(row.names(cluster1.markers_roc),9), 
+            cols.use = c("grey", "Red"), reduction.use = "tsne")
+
 # In PCA plot
 FeaturePlot(object = pancreas_1, 
             features.plot = c('tmem196b'), 
@@ -381,17 +419,58 @@ FeaturePlot(object = pancreas_1,
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
 # (or all markers if less than 20) for each cluster.
-pancreas_1.markers %>% group_by(cluster) %>% top_n(10, avg_logFC) -> top10
+head(pancreas_1.markers); dim(pancreas_1.markers)
+pancreas_1.markers %>% group_by(cluster) %>% top_n(10, avg_logFC) -> top10 # 显示每个cluster的marker gene
+head(top10) # A tibble: 6 x 6; Groups:cluster [1]
+
 # setting slim.col.label to TRUE will print just the cluster IDS instead of every cell name
-DoHeatmap(object = pancreas_1, genes.use = top10$gene, slim.col.label = TRUE, remove.key = TRUE)
+DoHeatmap(object = pancreas_1, genes.use = top10$gene, order.by.ident = TRUE, slim.col.label = TRUE, remove.key = TRUE)
 
 
 ###################################### Assigning cell type identity to clusters ####################################
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
+current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7)
+new.cluster.ids <- c("CD4 T cells",
+                     "CD14+ Monocytes",
+                     "B cells",
+                     "CD8 T cells",
+                     "FCGR3A+ Monocytes",
+                     "NK cells",
+                     "Dendritic cells",
+                     "Megakaryocytes")
+
+pbmc@ident <- plyr::mapvalues(x = pbmc@ident,
+                              from = current.cluster.ids,
+                              to = new.cluster.ids)
+
+TSNEPlot(object = pbmc, do.label = TRUE, pt.size = 0.5)
 
 ###################################### Further subdivisions within cell types ######################################
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
+# Seurat provides the StashIdent() function for keeping cluster IDs; this is useful for testing various parameters and 
+# comparing the clusters. For example, adjusting the parameters may lead to the CD4 T cells subdividing into two groups.
+# stash cluster identities for later
+pbmc <- StashIdent(object = pbmc, save.name = "ClusterNames_0.6")
 
+pbmc <- FindClusters(object = pbmc,
+                     reduction.type = "pca",
+                     dims.use = 1:10,
+                     resolution = 0.8,
+                     print.output = FALSE)
+
+# plot two tSNE plots side by side, and colour points based on different criteria
+plot1 <- TSNEPlot(object = pbmc,
+                  do.return = TRUE,
+                  no.legend = TRUE,
+                  do.label = TRUE)
+
+plot2 <- TSNEPlot(object = pbmc,
+                  do.return = TRUE,
+                  group.by = "ClusterNames_0.6",
+                  no.legend = TRUE,
+                  do.label = TRUE)
+
+plot_grid(plot1, plot2)
 
 #================================================================================================================
 #
