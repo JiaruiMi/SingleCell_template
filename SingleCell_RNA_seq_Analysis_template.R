@@ -134,7 +134,7 @@ apply(pancreas_1@meta.data[,c('nGene','nUMI','percent.mito')], 2, function(x) ro
 # i.e. columns in object@meta.data, PC scores etc.  For the PBMC dataset (not this one),since there is a rare subset of cells with an outlier level of high 
 # mitochondrial percentage and also low UMI content, we filter these as well
 par(mfrow = c(1, 2))
-GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "percent.mito") # GenePlot是专门用来画散点图的
+GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "percent.mito") # GenePlot是专门用来画二维散点图的
 GenePlot(object = pancreas_1, gene1 = "nUMI", gene2 = "nGene")
 ## Left: There are some clear outliers in mitochondrial RNA vs. the poly-A selected RNA. Right: The more unique molecules 
 ## captured, the more genes that are probed.
@@ -169,7 +169,8 @@ pancreas_1   # 我们看到手工check的结果和使用FilterCells()是一样�
 # a global-scaling normalization method LogNormalize that normalizes the gene expression measurements for each cell by the total 
 # expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result”
 # 其意思是，先针对测序文库的大小进行normalization，然后乘以一个scaling factor(非常类似于CPM，不过默认值是10000), 然后在对这个数值进行log转换
-# 注意，这种类似于CPM的数据校正方法，并没有对基因的长度进行校正
+# 注意，这种类似于CPM的数据校正方法，并没有对基因的长度进行校正；为什么我们的scaling factor是10000？这是与单细胞数据的测序量有关系的，测到的
+# UMI就是在10000这个数量级
 
 ## Normalization前
 pancreas_1@raw.data[,1]
@@ -185,14 +186,13 @@ pancreas_1 <- NormalizeData(object = pancreas_1, normalization.method = "LogNorm
 
 ## Normalization后
 str(pancreas_1)  # 增加了NormalizedData
-summary(pancreas_1@data[,1]) # 比较一下normalize前后的数据分布
+summary(pancreas_1@data[,1]) # 比较一下normalize前后的数据分布，normalization后变成了正态分布
 hist(colSums(pancreas_1@data),
      breaks = 100,
      main = "Total expression before normalisation",
      xlab = "Sum of expression")
 
 ############################# Detection of variable genes across the single cells ###########################
-par(mfrow = c(1, 1)) 
 ## 寻找HVG，我们认为表达量在一定程度以上，同时样本(细胞)之间有一定差异的基因，是可以用于后续分析(cluster, cell type identification)的
 ## 其余的基因，会成为噪声，需要滤除
 length(x = pancreas_1@var.genes)  # 在执行FindVariableGenes()之前，var.gene这个slot还是空着的
@@ -348,22 +348,23 @@ print(x = head(x = cluster5.markers, n = 5))
 
 # find markers for every cluster compared to all remaining cells, report only the positive ones (this step takes some time!)
 pancreas_1.markers <- FindAllMarkers(object = pancreas_1, only.pos = TRUE, min.pct = 0.25, thresh.use = 0.25)
+head(pancreas_1.markers)
 pancreas_1.markers %>% group_by(cluster) %>% top_n(2, avg_logFC)
 # A tibble: 16 x 6
 # Groups:   cluster [8]
 pancreas_1.markers $cluster
 
-# FindMarkers，有一系列参数可以选择，然后又4种找差异基因的算法，使用test.use参数进行设置
+# FindMarkers，针对某一个cluster，有一系列参数可以选择，然后又4种找差异基因的算法，使用test.use参数进行设置
 # 方法一： ROC test (“roc”)
 # 方法二： t-test (“t”)
 # 方法三： LRT test based on zero-inflated data (“bimod”, default)
-# 方法四： LRT test based on tobit-censoring models (“tobit”)
+# 方法四： LRT test based on tobit-censoring models (“tobit”)，这个比较费时
 # 值得注意的是： The ROC test returns the ‘classification power’ for any individual marker (ranging from 0 - random, to 1 - perfect).
 # 所以可以用来衡量找到的marker是否可靠，我们来比较一下使用以上四种方法找到的cluster1的marker
-cluster1.markers_bimod <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "bimod", only.pos = TRUE)
-cluster1.markers_roc <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "roc", only.pos = TRUE)
-cluster1.markers_t <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "t", only.pos = TRUE)
-cluster1.markers_tobit <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "tobit", only.pos = TRUE)
+cluster0.markers_bimod <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "bimod", only.pos = TRUE)
+cluster13.markers_roc <- FindMarkers(object = pancreas_1, ident.1 = 13, thresh.use = 0.25, test.use = "roc", only.pos = TRUE)
+cluster0.markers_t <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "t", only.pos = TRUE)
+cluster0.markers_tobit <- FindMarkers(object = pancreas_1, ident.1 = 0, thresh.use = 0.25, test.use = "tobit", only.pos = TRUE)
 
 # identical set of genes
 dim(cluster1.markers_bimod); head(cluster1.markers_bimod)
@@ -396,9 +397,12 @@ barplot(d, main = 'tobit')
 # 同时，该包提供了一系列可视化方法来检查差异分析的结果的可靠性：
 # VlnPlot (shows expression probability distributions across clusters)
 # FeaturePlot (visualizes gene expression on a tSNE or PCA plot) are our most commonly used visualizations
-# JoyPlot, CellPlot, and DotPlot 来试一下
+# RidgePlot, CellPlot, and DotPlot 来试一下
 
-VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2'))
+VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2','try','her15.1'))
+RidgePlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2','try','her15.1'))
+CellPlot(pancreas_1,pancreas_1@cell.names[1],pancreas_1@cell.names[2],do.ident = FALSE)
+DotPlot(pancreas_1,genes.plot = rownames(cluster1.markers_bimod)[1:10])
 
 # you can plot raw UMI counts as well，使用use.raw = T来指定
 VlnPlot(object = pancreas_1, features.plot = c('nf2a','nf2b','mitfb','cdc42'), use.raw = TRUE, y.log = TRUE)
@@ -409,10 +413,9 @@ FeaturePlot(object = pancreas_1,
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 FeaturePlot(object = pancreas_1,          # 显示某个cluster的marker gene，很不错的方法
-            features.plot = head(row.names(cluster1.markers_roc),9), 
+            features.plot = head(row.names(cluster13.markers_roc),9), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
-# In PCA plot
 FeaturePlot(object = pancreas_1, 
             features.plot = c('tmem196b'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
@@ -422,6 +425,7 @@ FeaturePlot(object = pancreas_1,
 head(pancreas_1.markers); dim(pancreas_1.markers)
 pancreas_1.markers %>% group_by(cluster) %>% top_n(10, avg_logFC) -> top10 # 显示每个cluster的marker gene
 head(top10) # A tibble: 6 x 6; Groups:cluster [1]
+class(top10)
 
 # setting slim.col.label to TRUE will print just the cluster IDS instead of every cell name
 DoHeatmap(object = pancreas_1, genes.use = top10$gene, order.by.ident = TRUE, slim.col.label = TRUE, remove.key = TRUE)
@@ -429,21 +433,27 @@ DoHeatmap(object = pancreas_1, genes.use = top10$gene, order.by.ident = TRUE, sl
 
 ###################################### Assigning cell type identity to clusters ####################################
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
-current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7)
-new.cluster.ids <- c("CD4 T cells",
-                     "CD14+ Monocytes",
-                     "B cells",
-                     "CD8 T cells",
-                     "FCGR3A+ Monocytes",
-                     "NK cells",
-                     "Dendritic cells",
-                     "Megakaryocytes")
+current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+new.cluster.ids <- c("Delta cells",
+                     "Unknown cells - endocrine 1",
+                     "Unknown cells - exocrine 1",
+                     "Unknown cells - endocrine 2",
+                     "Acinar cells",
+                     "Ductal cells - type 1",
+                     "Centroacinar cells",
+                     "Cell with both endocrine and exocrine markers",
+                     "Unknown cells - exocrine probably",
+                     "Unknown cells - endocrine probably",
+                     "Unknown cells - exocrine probably",
+                     "Blood cells - type 1",
+                     "Ductal cells - type 2",
+                     "Blood cells - type 2")
 
-pbmc@ident <- plyr::mapvalues(x = pbmc@ident,
+pancreas_1@ident <- plyr::mapvalues(x = pancreas_1@ident,
                               from = current.cluster.ids,
                               to = new.cluster.ids)
 
-TSNEPlot(object = pbmc, do.label = TRUE, pt.size = 0.5)
+TSNEPlot(object = pancreas_1, do.label = TRUE, pt.size = 0.5)
 
 ###################################### Further subdivisions within cell types ######################################
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
