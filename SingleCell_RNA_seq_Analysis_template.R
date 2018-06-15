@@ -416,12 +416,12 @@ FeaturePlot(object = pancreas_1,          # 显示某个cluster的marker gene，
             features.plot = head(row.names(cluster7.markers_roc),9), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
-select.cells <- FeaturePlot(object = pancreas_1, 
+FeaturePlot(object = pancreas_1, 
             features.plot = c('cdh5'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne",
-            do.hover = T, data.hover = c("ident", "PC1", "nGene"),
+            do.hover = T, data.hover = c("ident", "PC1", "nGene",'percent.mito', 'ClusterNames_0.6', 'res.0.6', 'res.1'),
             do.identify = TRUE, dark.theme = T)
-head(select.cells, n = 12)
+pancreas_1@meta.data
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
 # (or all markers if less than 20) for each cluster.
