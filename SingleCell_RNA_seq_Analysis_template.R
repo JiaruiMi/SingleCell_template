@@ -320,7 +320,7 @@ PrintCalcParams(object = pancreas_1, calculation = 'RunPCA')
 # 而且作者建议使用上面clustering相同的PC
 pancreas_1 <- RunTSNE(object = pancreas_1, dims.use = 1:15, do.fast = TRUE)
 # note that you can set do.label=T to help label individual clusters 
-TSNEPlot(object = pancreas_1, do.label=T)
+TSNEPlot(object = pancreas_1, do.label=T, do.identify = T)
 save(pancreas_1, file = "pancreas_1_endo.rData")
 
 
@@ -416,9 +416,12 @@ FeaturePlot(object = pancreas_1,          # 显示某个cluster的marker gene，
             features.plot = head(row.names(cluster7.markers_roc),9), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
-FeaturePlot(object = pancreas_1, 
+select.cells <- FeaturePlot(object = pancreas_1, 
             features.plot = c('cdh5'), 
-            cols.use = c("grey", "Red"), reduction.use = "tsne")
+            cols.use = c("grey", "Red"), reduction.use = "tsne",
+            do.hover = T, data.hover = c("ident", "PC1", "nGene"),
+            do.identify = TRUE, dark.theme = T)
+head(select.cells, n = 12)
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
 # (or all markers if less than 20) for each cluster.
