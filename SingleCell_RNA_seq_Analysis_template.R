@@ -400,7 +400,7 @@ barplot(d, main = 'tobit')
 # RidgePlot, CellPlot, and DotPlot 来试一下
 
 VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2','try','her15.1'))
-RidgePlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2','try','her15.1'))
+RidgePlot(object = pancreas_1, features.plot = c("ins", "gcga",'sst2'))
 CellPlot(pancreas_1,pancreas_1@cell.names[1],pancreas_1@cell.names[2],do.ident = FALSE)
 DotPlot(pancreas_1,genes.plot = rownames(cluster1.markers_bimod)[1:10])
 
@@ -413,11 +413,11 @@ FeaturePlot(object = pancreas_1,
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 FeaturePlot(object = pancreas_1,          # 显示某个cluster的marker gene，很不错的方法
-            features.plot = head(row.names(cluster13.markers_roc),9), 
+            features.plot = head(row.names(cluster7.markers_roc),9), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 FeaturePlot(object = pancreas_1, 
-            features.plot = c('tmem196b'), 
+            features.plot = c('cdh5'), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
 
 # DoHeatmap generates an expression heatmap for given cells and genes. In this case, we are plotting the top 20 markers 
@@ -435,11 +435,11 @@ DoHeatmap(object = pancreas_1, genes.use = top10$gene, order.by.ident = TRUE, sl
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
 current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 new.cluster.ids <- c("Delta cells",
-                     "Unknown cells - endocrine 1",
-                     "Unknown cells - exocrine 1",
-                     "Unknown cells - endocrine 2",
+                     "Beta cells",
+                     "Smooth Muscle cells",
+                     "Alpha cells",
                      "Acinar cells",
-                     "Ductal cells - type 1",
+                     "Endothelial cells",
                      "Centroacinar cells",
                      "Cell with both endocrine and exocrine markers",
                      "Unknown cells - exocrine probably",
@@ -451,7 +451,7 @@ new.cluster.ids <- c("Delta cells",
 
 pancreas_1@ident <- plyr::mapvalues(x = pancreas_1@ident,
                               from = current.cluster.ids,
-                              to = new.cluster.ids)
+                              to = new.cluster.ids)   # 忽略warning message
 
 TSNEPlot(object = pancreas_1, do.label = TRUE, pt.size = 0.5)
 
@@ -460,21 +460,21 @@ TSNEPlot(object = pancreas_1, do.label = TRUE, pt.size = 0.5)
 # Seurat provides the StashIdent() function for keeping cluster IDs; this is useful for testing various parameters and 
 # comparing the clusters. For example, adjusting the parameters may lead to the CD4 T cells subdividing into two groups.
 # stash cluster identities for later
-pbmc <- StashIdent(object = pbmc, save.name = "ClusterNames_0.6")
+pancreas_1 <- StashIdent(object = pancreas_1, save.name = "ClusterNames_0.6")
 
-pbmc <- FindClusters(object = pbmc,
+pancreas_1 <- FindClusters(object = pancreas_1,
                      reduction.type = "pca",
-                     dims.use = 1:10,
-                     resolution = 0.8,
+                     dims.use = 1:15,
+                     resolution = 1,   # 修改了resolution，变成了17个cluster
                      print.output = FALSE)
 
 # plot two tSNE plots side by side, and colour points based on different criteria
-plot1 <- TSNEPlot(object = pbmc,
+plot1 <- TSNEPlot(object = pancreas_1,
                   do.return = TRUE,
                   no.legend = TRUE,
                   do.label = TRUE)
 
-plot2 <- TSNEPlot(object = pbmc,
+plot2 <- TSNEPlot(object = pancreas_1,
                   do.return = TRUE,
                   group.by = "ClusterNames_0.6",
                   no.legend = TRUE,
