@@ -402,9 +402,34 @@ save(pancreas_1, file = "pancreas_1_endo.rData")
 
 
 ############################### Finding differentially expressed genes (cluster biomarkers) ###########################
-# 差异分析在seurat包里面被封装成了函数：FindMarkers()
+# 差异分析在seurat包里面被封装成了函数：FindMarkers(); Seurat是基于非参数检验当中的Wilcoxon rank sum test进行差异基因表达
+## 分析的，其表示方法为"wilcox"。之前的默认方法是“bimod”(Likelihood-ratio test for single cell gene expression)。
+## “roc” : Standard AUC classifier
+## “t” : Student’s t-test
+## “tobit” : Tobit-test for differential gene expression
+## “poisson” : Likelihood ratio test assuming an underlying negative binomial distribution. Use only for UMI-based datasets
+## “negbinom” : Likelihood ratio test assuming an underlying negative binomial distribution. Use only for UMI-based datasets
+## “MAST” : GLM-framework that treates cellular detection rate as a covariate
+## “DESeq2” : DE based on a model using the negative binomial distribution 
+## 在函数中使用test.use参数来指定进行差异基因表达的方法
 
 # 默认设置是给出positive和negative的markers，one cluster compared against genes in all other cells
+# p_val：未校正的p值
+# avg_logFC：正值表示gene在第一组中的表达量高于第二组中
+# pct.1：gene在第一组中被检测到的比例
+# pct.2: gene在第二组中被检测到的比例
+# p_val_adj：基于bonferroni校正的多重假设检验的校正后的p值
+
+# 如果ident.2这个参数没有明确指定是哪个组的话，FindMarkers函数会检测ident.1与其他所有细胞的差异表达gene
+
+# 为了加快计算速度，Seurat允许我们在进行差异基因分析的时候，先对gene或者细胞进行过滤，可以用于过滤的参数有：
+## min.pct：minimal percentage, gene在细胞中的最小检出率
+## logfc.threshold：A组相比于B组logFC比值在某个值以上的
+## min.diff.pct: gene的检出率在两个cluster的细胞中，相差不超过的值，如25%，则用0.25表示
+## max.cells.per.ident：subsample each group to a maximum of 多少个细胞，这是针对大的cluster或者computationally intensive
+##                      DE
+## 注意，我们限定了min.pct, logfc.threshold和min.diff.pct都会加快计算速度，但是会丢失一部分被filter掉的gene
+
 
 # find all markers of cluster 1
 cluster1.markers <- FindMarkers(object = pancreas_1, ident.1 = 1, min.pct = 0.25)
@@ -502,7 +527,7 @@ FeaturePlot(object = pancreas_1,
 # Calculate gene-specific contrast levels based on quantiles of non-zero expression. Particularly useful when plotting 
 # multiple markers 图例的颜色是根据不同的gene的上下10%来界定的。
 FeaturePlot(object = pancreas_1, features.plot = c("ins", "gcga"), no.legend = FALSE, 
-            min.cutoff = "q10", max.cutoff = "q90")
+            min.cutoff = "q10", max.cutoff = "q90", dark.theme = T)
 
 # 在一张tSNE上同时展现两个gene，这个非常有用，可以展示比如bihormonal gene
 FeaturePlot(object = pancreas_1, features.plot = c("ins", "gcga"), 
