@@ -8,7 +8,9 @@
 # Seurat派使用Seurat包里定义的S4 object储存数据，主打分析包有Seurat（Seurat，聚类分析等全套内容），monocle（Monocle，pseudotime analysis等）……（待补充）
 # 有一个R package可以将Seurat S4 object和SingleCellExperiment S4 object相互转换（这个名字现在想不起来了，在推特上看过，待查证）。
 #=============================================================================================
+#
 #                                      "Seurat" package
+#
 #=============================================================================================
 # 牛津大学的Rahul Satija等开发的Seurat，最早公布在Nature biotechnology, 2015，文章是； Spatial reconstruction of single-cell 
 # gene expression data , 在2017年进行了非常大的改动，所以重新在biorxiv发表了文章在 Integrated analysis of single cell transcriptomic 
@@ -612,6 +614,276 @@ plot2 <- TSNEPlot(object = pancreas_1,
                   do.label = TRUE)
 
 plot_grid(plot1, plot2)
+
+
+################################### Converting to SingleCellExperiment ###################################
+library(scater)
+library(cowplot)
+pancreas_1_sce <- Convert(from = pancreas_1, to = 'sce')  # Convert函数是来自Seurat包的
+pancreas_1_sce
+p1 <- plotExpression(object = pancreas_1_sce, features = "ins", x = "ident") + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 1))
+p1                                                                                                      
+
+p2 <- plotPCA(object = pancreas_1_sce, colour_by = "ident")
+plot_grid(p1, p2)
+
+################################### Converting from SingleCellExperiment ###################################
+setwd('/Users/mijiarui/Seurat_SatijaLab')
+dir()
+manno <- readRDS("manno_human.rds")
+manno
+manno <- runPCA(manno)
+manno_seurat <- Convert(from = manno, to = "seurat")
+manno_seurat <- SetAllIdent(object = manno_seurat, id = "cell_type1")
+p1 <- DimPlot(object = manno_seurat, reduction.use = "PCA", dim.1 = 1, dim.2 = 2, 
+              group.by = "Source", do.return = TRUE)
+p2 <- RidgePlot(object = manno_seurat, features.plot = "ACTB", y.lab.rot = TRUE, 
+                group.by = "Source", do.return = TRUE)
+plot_grid(p1, p2)
+
+#=============================================================================================
+#
+#                         "Seurat" package - with multi-modal data
+#
+#=============================================================================================
+## 研究背景：
+## Here, we analyze a dataset of 8,617 cord blood mononuclear cells (CBMCs), produced with CITE-seq, where we simultaneously 
+## measure the single cell transcriptomes alongside the expression of 11 surface proteins, whose levels are quantified with 
+## DNA-barcoded antibodies. First, we load in two count matrices : one for the RNA measurements, and one for the antibody-derived 
+## tags (ADT). 
+
+
+## 更改工作路径
+setwd('/Users/mijiarui/Seurat_SatijaLab/CBMCs_CITE-seq_Examples')
+
+## 加载数据，可以直接加载gz的数据
+# Load in the RNA UMI matrix
+
+# Note that this dataset also contains ~5% of mouse cells, which we can use
+# as negative controls for the protein measurements. For this reason, the
+# gene expression matrix has HUMAN_ or MOUSE_ appended to the beginning of
+# each gene.
+cbmc.rna <- read.csv("GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz", 
+                     sep = ",", header = TRUE, row.names = 1)
+
+# To make life a bit easier going forward, we're going to discard all but
+# the top 100 most highly expressed mouse genes, and remove the 'HUMAN_'
+# from the CITE-seq prefix
+cbmc.rna.collapsed <- CollapseSpeciesExpressionMatrix(cbmc.rna)
+
+# Load in the ADT UMI matrix
+cbmc.adt <- read.csv("GSE100866_CBMC_8K_13AB_10X-ADT_umi.csv.gz", 
+                     sep = ",", header = TRUE, row.names = 1)
+
+
+# To avoid any confusion where genes and proteins might have the same name,
+# we'll append 'CITE_' to each of the ADT rownames. This is not strictly
+# necessary, but it helps for clarity
+cbmc.citeseq <- cbmc.adt
+rownames(cbmc.citeseq) <- paste0("CITE_", rownames(cbmc.adt))
+
+# Lastly, we observed poor enrichments for CCR5, CCR7, and CD10 - and
+# therefore remove them from the matrix (optional)
+cbmc.citeseq <- cbmc.citeseq[setdiff(rownames(cbmc.citeseq), c("CITE_CCR5", 
+                                                               "CITE_CCR7", "CITE_CD10")), ]
+
+
+## 初始化Seurat对象，根据RNA expression将细胞进行分群
+cbmc <- CreateSeuratObject(raw.data = cbmc.rna.collapsed)
+
+# standard log-normalization
+cbmc <- NormalizeData(cbmc)
+
+# choose ~1k variable genes
+cbmc <- FindVariableGenes(cbmc, do.plot = FALSE, y.cutoff = 0.5)
+
+# standard scaling (no regression)
+cbmc <- ScaleData(cbmc, display.progress = FALSE)
+
+# Run PCA, select 13 PCs for tSNE visualization and graph-based clustering
+cbmc <- RunPCA(cbmc, pcs.print = 0)
+PCElbowPlot(cbmc)
+
+
+cbmc <- FindClusters(cbmc, dims.use = 1:13, print.output = FALSE)
+cbmc <- RunTSNE(cbmc, dims.use = 1:13)
+
+# Find the markers that define each cluster, and use these to annotate the
+# clusters, we use max.cells.per.ident to speed up the process
+cbmc.rna.markers <- FindAllMarkers(cbmc, max.cells.per.ident = 100, logfc.threshold = log(2), 
+                                   only.pos = TRUE, min.diff.pct = 0.3, do.print = F)
+
+current.cluster.ids <- 0:15
+# Note, for simplicity we are merging two CD14+ Mono clusters (that differ
+# in the expression of HLA-DR genes), and two NK clusters (that differ in
+# cell cycle stage)
+new.cluster.ids <- c("CD4 T", "CD14+ Mono", "CD14+ Mono", "NK", "Mouse", "B", 
+                     "CD8 T", "CD16+ Mono", "Unknown", "CD34+", "Mk", "Eryth", "DC", "Mouse", 
+                     "pDC", "NK")
+cbmc@ident <- plyr::mapvalues(x = cbmc@ident, from = current.cluster.ids, to = new.cluster.ids)
+
+TSNEPlot(cbmc, do.label = TRUE, pt.size = 0.5)
+
+
+## 将蛋白表达的数据添加到Seurat对象里面
+# Seurat v2.1 allows you to store information from multiple assays in the same object, as long as the data is multi-modal 
+# (collected on the same set of cells). You can use the SetAssayData and GetAssayData accessor functions to add and fetch 
+# data from additional assays.
+
+# We will define a CITE assay, and store raw data for it. Note that it's
+# convenient, but not required, to use the same name as the rowname prefix
+# we defined earlier.
+
+# If you are interested in how these data are internally stored, you can
+# check out the @assay slot, and the assay class, which is defined in
+# multimodal.R Note that RNA data is still stored in its normal slots, but
+# can also be accessed using GetAssayData and SetAssayData, using the 'RNA'
+# assay
+
+cbmc <- SetAssayData(cbmc, assay.type = "CITE", slot = "raw.data", new.data = cbmc.citeseq)
+
+# Now we can repeat the preprocessing (normalization and scaling) steps that
+# we typically run with RNA, but modifying the 'assay.type' argument.  For
+# CITE-seq data, we do not recommend typical LogNormalization. Instead, we
+# use a centered log-ratio (CLR) normalization, computed independently for
+# each gene.  This is a slightly improved procedure from the original
+# publication, and we will release more advanced versions of CITE-seq
+# normalizations soon.
+cbmc <- NormalizeData(cbmc, assay.type = "CITE", normalization.method = "genesCLR")
+cbmc <- ScaleData(cbmc, assay.type = "CITE", display.progress = FALSE)
+
+## 在RNA构建的cluster中，可视化蛋白的表达
+# You can use the names of any ADT markers, (i.e. “CITE_CD4”), in FetchData, FeaturePlot, RidgePlot, GenePlot, DoHeatmap, or any other visualization features
+
+# in this plot, protein (ADT) levels are on top, and RNA levels are on the
+# bottom
+FeaturePlot(cbmc, features.plot = c("CITE_CD3", "CITE_CD11c", "CITE_CD8", "CITE_CD16", 
+                                    "CD3E", "ITGAX", "CD8A", "FCGR3A"), min.cutoff = "q05", max.cutoff = "q95", 
+            nCol = 4, cols.use = c("lightgrey", "blue"), pt.size = 0.5)
+
+RidgePlot(cbmc, features.plot = c("CITE_CD3", "CITE_CD11c", "CITE_CD8", "CITE_CD16"), 
+          nCol = 2)
+
+
+par(mfrow = c(1, 2))
+# Draw ADT scatter plots (like biaxial plots for FACS). Note that you can
+# even 'gate' cells if desired by setting do.identify = TRUE
+GenePlot(cbmc, gene1 = "CITE_CD19", gene2 = "CITE_CD3", cex = 0.5)
+
+# view relationship between protein and RNA
+GenePlot(cbmc, gene1 = "CITE_CD3", gene2 = "CD3E", cex.use = 0.5)
+
+
+# Let's plot CD4 vs CD8 levels in T cells
+tcells <- SubsetData(cbmc, ident.use = c("CD4 T", "CD8 T"))
+
+par(mfrow = c(1, 2))
+GenePlot(tcells, gene1 = "CITE_CD4", gene2 = "CITE_CD8", cex = 0.5)
+
+# Let's look at the raw (non-normalized) ADT counts. You can see the values
+# are quite high, particularly in comparison to RNA values. This is due to
+# the significantl higher protein copy number in cells, which significantly
+# reduces 'drop-out' in ADT data
+GenePlot(tcells, gene1 = "CITE_CD4", gene2 = "CITE_CD8", use.raw = TRUE, cex = 0.5)
+
+# If you look a bit more closely, you'll see that our CD8 T cell cluster is
+# enriched for CD8 T cells, but still contains many CD4+ CD8- T cells.  This
+# is because Naive CD4 and CD8 T cells are quite similar transcriptomically,
+# and the RNA dropout levels for CD4 and CD8 are quite high.  This
+# demonstrates the challenge of defining subtle immune cell differences from
+# scRNA-seq data alone.
+
+## 比较不同cluster之间差异表达的蛋白
+mono.markers <- FindMarkers(cbmc, "CD14+ Mono", "CD16+ Mono", assay.type = "CITE", 
+                            logfc.threshold = log(1.5))
+head(mono.markers)
+
+
+# Note that we observe CD14 protein expression only on CD4+ T cells, as has
+# been previously observed in the literature
+tcell.markers <- FindMarkers(cbmc, ident.1 = "CD4 T", ident.2 = "CD8 T", assay.type = "CITE", 
+                             logfc.threshold = log(1.5))
+head(tcell.markers)
+
+
+
+# Downsample the clusters to a maximum of 300 cells each (makes the heatmap
+# easier to see for small clusters)
+cbmc.small <- SubsetData(cbmc, max.cells.per.ident = 300)
+# Find protein markers for all clusters, and draw a heatmap
+adt.markers <- FindAllMarkers(cbmc.small, assay.type = "CITE", only.pos = TRUE, 
+                              print.bar = F)
+
+DoHeatmap(cbmc.small, genes.use = unique(adt.markers$gene), assay.type = "CITE", 
+          slim.col.label = TRUE, remove.key = TRUE, group.label.rot = TRUE)
+
+
+# You can see that our unknown cells co-express both myeloid and lymphoid
+# markers (true at the RNA level as well). They are likely cell clumps
+# (multiplets) that should be discarded. We'll remove the mouse cells now as
+# well
+cbmc <- SubsetData(cbmc, ident.remove = c("Unknown", "Mouse"))
+
+## 基于蛋白的水平进行cluster
+# We will store the results in a new object, cbmc_cite.
+cbmc_cite <- RunPCA(cbmc, pc.genes = rownames(cbmc.citeseq), assay.type = "CITE", 
+                    pcs.print = 0)
+PCAPlot(cbmc_cite, pt.size = 0.5)
+
+# Since we only have 10 markers, instead of doing PCA, we'll just use a
+# standard euclidean distance matrix here.  Also, this provides a good
+# opportunity to demonstrate how to do visualization and clustering using a
+# custom distance matrix in Seurat
+
+adt.data <- GetAssayData(cbmc_cite, assay.type = "CITE", slot = "data")
+adt.dist <- as.matrix(dist(t(adt.data)))
+
+# Before we recluster the data on ADT levels, we'll stash the RNA cluster
+# IDs for later
+cbmc_cite <- StashIdent(cbmc_cite, "rnaClusterID")
+
+# Now, we rerun tSNE using our distance matrix defined only on ADT (protein)
+# levels.
+cbmc_cite <- RunTSNE(cbmc_cite, distance.matrix = adt.dist)
+
+# We can also rerun clustering using the same distance matrix. We'll start
+# with a very coarse clustering (resolution=0.2)
+cbmc_cite <- FindClusters(cbmc_cite, distance.matrix = adt.dist, print.output = FALSE, 
+                          resolution = 0.2)
+
+# We can compare the RNA and protein clustering, and use this to annotate
+# the protein clustering (we could also of course use FindMarkers)
+clustering.table <- table(cbmc_cite@ident, cbmc_cite@meta.data$rnaClusterID)
+
+current.cluster.ids <- 0:10
+# Note, for simplicity we are merging two CD14+ Mono clusters (that differ
+# in the expression of HLA-DR genes), and two NK clusters (that differ in
+# cell cycle stage)
+new.cluster.ids <- c("CD4 T", "CD14+ Mono", "NK", "B", "CD8 T", "CD34+", "Unknown1", 
+                     "CD16+ Mono", "Unknown2", "pDC", "Unknown3")
+cbmc_cite@ident <- plyr::mapvalues(x = cbmc_cite@ident, from = current.cluster.ids, 
+                                   to = new.cluster.ids)
+
+tsne_rnaClusters <- TSNEPlot(cbmc_cite, do.return = TRUE, group.by = "rnaClusterID", 
+                             pt.size = 0.5)
+tsne_rnaClusters <- tsne_rnaClusters + ggtitle("Clustering based on scRNA-seq") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+tsne_adtClusters <- TSNEPlot(cbmc_cite, do.return = TRUE, pt.size = 0.5)
+tsne_adtClusters <- tsne_adtClusters + ggtitle("Clustering based on ADT signal") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Note: for this comparison, both the RNA and protein clustering are
+# visualized on a tSNE generated using the ADT distance matrix.
+
+plot_grid(tsne_rnaClusters, tsne_adtClusters, ncol = 2)
+
+tcells <- SubsetData(cbmc_cite, ident.use = c("CD4 T", "CD8 T"))
+GenePlot(tcells, gene1 = "CITE_CD4", gene2 = "CITE_CD8", use.raw = F, cex = 0.5)
+
+RidgePlot(cbmc_cite, features.plot = c("CITE_CD11c", "CITE_CD8", "CITE_CD16", 
+                                       "CITE_CD4", "CITE_CD19", "CITE_CD14"), nCol = 2)
 
 #================================================================================================================
 #
