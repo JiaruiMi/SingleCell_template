@@ -16,6 +16,24 @@
 # 差异基因分析、亚群特异性标志物鉴定等等等。给初学者提供了一个2,700 PBMC scRNA-seq dataset from 10X genomics的数据实战指导；这里的测试
 # 数据是经由Illumina NextSeq 500测到的2,700 single cells 表达矩阵。
 
+# 新版的Seurat把对象的建立分解成7个步骤
+# 1， 导入Expression matrix
+# 2,  对象的初始化，使用CreateSeuratObject函数，结果会存储在object@raw.data中，一般输入进去的对象是下机处理后的原始矩阵数据
+#     可以是counts，或是某些软件校正后的数值，比如FPKM，TPM等等，但是绝对不能是log转换后的数据；Seurat可以倒入任何方法得到的
+#     矩阵数据，其中Read10X是专门指读入10X的数据；我们更建议使用counts data，因为我们可以使用gene scaling和差异基因分析，并
+#     服从负二项分布
+# 3， 对细胞进行过滤，select/remove cells based on QC metrics
+# 4,  对数据进行归一化normalization，结果会存储在object@data中，是经过类似CPM然后再log转换后的数据，一般这部分数据是用来进行
+#     数据可视化的，比如violinplot或者featureplot，并进行差异基因分析，HVG的寻找等等，并且作为ScaleData的输入。
+# 5， 寻找差异基因，结果会存储在object@hvg.info和object@var.gene中
+# 6， 对结果进行scaling，目的是scale和回归去除混杂因素，结果存储在object@scaled.data中；经过了对测序文库大小的校正，因为根据0
+#     进行了scale，所以结果有正值也有负值。如果校正了数据变异的特定的来源，比如cell-cycle，那么scaled residuals from the model
+#     也会被存储进来。只有经过scale的数据才能进行数据降维的操作。
+# 7， 得到最终当然Seurat对象
+
+# Seurat的slot比较复杂，建议?Seurat来查看slot的帮助文档
+
+
 ############################################### 载入数据 ###############################################
 
 ### Load packages，加载数据前需要将文件夹中的三个文件分别命名为“matrix.mtx", "barcodes.tsv", "genes.tsv"
@@ -264,7 +282,65 @@ pancreas_1 <- ProjectPCA(object = pancreas_1, do.print = T)
 PCHeatmap(object = pancreas_1, pc.use = 1, do.balanced = TRUE, label.columns = FALSE)
 PCHeatmap(object = pancreas_1, pc.use = 1, cells.use = 500, do.balanced = TRUE, label.columns = FALSE)
 PCHeatmap(object = pancreas_1, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE, use.full = F)
+### 需要指出的是，使用PCHeatmap也可以帮助决定使用多少个PC，这被称作是supervised analysis。该函数可以展示细胞和基因的极端值，并且
+### 能够帮助排除哪些被ribosomal/mitochondrial gene抑或是cell cycle gene驱动的PC
 
+
+## Seurat出了提供RunPCA以及后面提到RunTSNE以外，还有RunICA和RunDiffusionMap这些常用的scRNA-seq数据降维方法。
+
+
+## 数据降维的每一步操作都会存储到object@dr这个slot里面，比如RunPCA之后就会出现object@dr$pca，其中的内容也非常丰富：
+### cell.embeddings：每个细胞的坐标信息
+### gene.loadings：每个参与PCA的基因，在各个PC上的贡献，即loading score
+### gene.loadings.full：投射到所有基因（不仅仅是用于PCA的基因）在各个PC上的贡献，即loading score
+### sdev：每个PC在总变异上的贡献值
+### key：cell.embeddings和gene.loading的名字，比如PC
+### jackstraw: jackstraw procedure的结果
+### misc：任何其他的information
+
+## 作者定义了一些函数来调取这些内容，比如：GetCellEmbeddings, GetGeneLoadings, GetDimReduction
+head(x = GetCellEmbeddings(object = pancreas_1, reduction.type = "pca", dims.use = 1:5))
+head(x = GetGeneLoadings(object = pancreas_1, reduction.type = "pca", dims.use = 1:5))
+# We also provide shortcut functions for common dimensional reduction
+# techniques like PCA PCAEmbed and PCALoad() will pull the PCA cell
+# embeddings and gene loadings respectively
+head(x = GetDimReduction(object = pancreas_1, reduction.type = "pca", slot = "sdev"))
+
+
+############################################## MDS降维，无需求别run ##################################
+# 我们还可以计算一些Seurat当中没有定义的数据降维方法，比如MDS, 
+####
+# Before running MDS, we first calculate a distance matrix between all pairs of cells.  Here we use a simple euclidean distance 
+# metric on all genes, using object@scale.data as input
+d <- dist(x = t(x = pancreas_1@scale.data))
+# Run the MDS procedure, k determines the number of dimensions
+mds <- cmdscale(d = d, k = 2)  # 很费时
+# cmdscale returns the cell embeddings, we first label the columns to ensure downstream consistency
+colnames(x = mds) <- paste0("MDS", 1:2)
+# We will now store this as a new dimensional reduction called 'mds'
+pancreas_1 <- SetDimReduction(object = pancreas_1, reduction.type = "mds", slot = "cell.embeddings", 
+                        new.data = mds)
+pancreas_1 <- SetDimReduction(object = pancreas_1, reduction.type = "mds", slot = "key", 
+                        new.data = "MDS")
+
+# We can now use this as you would any other dimensional reduction in all downstream functions (similar to PCAPlot, but 
+# generalized for any reduction)
+DimPlot(object = pancreas_1, reduction.use = "mds", pt.size = 0.5)
+
+
+# If you wold like to observe genes that are strongly correlated with the first MDS coordinate (similar to ProjectPCA, but 
+# generalized for any reduction):
+pbmc <- ProjectDim(object = pancreas_1, reduction.type = "mds")
+
+# Display the results as a heatmap (similar to PCHeatmap, but generalized for any dimensional reduction)
+DimHeatmap(object = pancreas_1, reduction.type = "mds", dim.use = 1, cells.use = 500, 
+           use.full = TRUE, do.balanced = TRUE, label.columns = FALSE, remove.key = TRUE)
+
+# Explore how the first MDS dimension is distributed across clusters
+VlnPlot(object = pancreas_1, features.plot = "MDS1", x.lab.rot = TRUE)
+
+# See how the first MDS dimension is correlated with the first PC dimension
+GenePlot(object = pancreas_1, gene1 = "MDS1", gene2 = "PC1")
 ################################### 找到有统计学显著性的主成分 #####################################
 # 主成分分析结束后需要确定哪些主成分所代表的基因可以进入下游分析，这里可以使用JackStraw做重抽样分析(默认每次重抽样1%的数据)。
 # Seurat randomly permutes a subset of the data (1% by default) and reruns PCA, constructing a null distribution of gene scores by 
@@ -398,23 +474,46 @@ barplot(d, main = 'tobit')
 # VlnPlot (shows expression probability distributions across clusters)
 # FeaturePlot (visualizes gene expression on a tSNE or PCA plot) are our most commonly used visualizations
 # RidgePlot, CellPlot, and DotPlot 来试一下
+## RidgePlot 是来自于ggridges这个包，在每个cluster看单个gene的表达丰度的分布distribution
+## Dotplot中点的大小是这个cluster中表达这个gene的比例，颜色代表的是表达量
 
 VlnPlot(object = pancreas_1, features.plot = c("ins", "gcga","gcgb", 'sst2','try','her15.1'))
 RidgePlot(object = pancreas_1, features.plot = c("ins", "gcga",'sst2'))
 CellPlot(pancreas_1,pancreas_1@cell.names[1],pancreas_1@cell.names[2],do.ident = FALSE)
-DotPlot(pancreas_1,genes.plot = rownames(cluster1.markers_bimod)[1:10])
+DotPlot(pancreas_1,genes.plot = rownames(cluster1.markers_bimod)[1:10], plot.legend = T)
 
 # you can plot raw UMI counts as well，使用use.raw = T来指定
 VlnPlot(object = pancreas_1, features.plot = c('nf2a','nf2b','mitfb','cdc42'), use.raw = TRUE, y.log = TRUE)
 
 # In tSNE plot
 FeaturePlot(object = pancreas_1, 
-            features.plot = c('nf2a','nf2b','mitfb','cdc42'), 
-            cols.use = c("grey", "Red"), reduction.use = "tsne")
+            features.plot = c('nf2a'), 
+            cols.use = c("grey", "Red"), reduction.use = "tsne",
+            no.legend = F)  # 加上了表征表达量的图例 
+
+FeaturePlot(object = pancreas_1, 
+            features.plot = c('nf2a'), 
+            cols.use = c("grey", "Red"), reduction.use = "tsne",
+            no.legend = F,
+            min.cutoff = 0.2,    # 为了增加对比度，可以设定min和max cutoff
+            max.cutoff = 1)  
+
+
+# Calculate gene-specific contrast levels based on quantiles of non-zero expression. Particularly useful when plotting 
+# multiple markers 图例的颜色是根据不同的gene的上下10%来界定的。
+FeaturePlot(object = pancreas_1, features.plot = c("ins", "gcga"), no.legend = FALSE, 
+            min.cutoff = "q10", max.cutoff = "q90")
+
+# 在一张tSNE上同时展现两个gene，这个非常有用，可以展示比如bihormonal gene
+FeaturePlot(object = pancreas_1, features.plot = c("ins", "gcga"), 
+            cols.use = c("grey", "red", "blue", "green"), 
+            overlay = TRUE, no.legend = FALSE)
+
 
 FeaturePlot(object = pancreas_1,          # 显示某个cluster的marker gene，很不错的方法
             features.plot = head(row.names(cluster7.markers_roc),9), 
             cols.use = c("grey", "Red"), reduction.use = "tsne")
+
 
 FeaturePlot(object = pancreas_1, 
             features.plot = c('cdh5'), 
@@ -433,6 +532,9 @@ class(top10)
 # setting slim.col.label to TRUE will print just the cluster IDS instead of every cell name
 DoHeatmap(object = pancreas_1, genes.use = top10$gene, order.by.ident = TRUE, slim.col.label = TRUE, remove.key = TRUE)
 
+DoHeatmap(object = SubsetData(object = pancreas_1, max.cells.per.ident = 50), 
+          genes.use = c('ins','gcga','sst2','ela2l','epcam'), 
+          slim.col.label = TRUE, group.label.rot = TRUE)
 
 ###################################### Assigning cell type identity to clusters ####################################
 # https://mp.weixin.qq.com/s/QZD1tvCgZVa5PQtbjvrkrg
@@ -463,6 +565,7 @@ TSNEPlot(object = pancreas_1, do.label = TRUE, pt.size = 0.5)
 # Seurat provides the StashIdent() function for keeping cluster IDs; this is useful for testing various parameters and 
 # comparing the clusters. For example, adjusting the parameters may lead to the CD4 T cells subdividing into two groups.
 # stash cluster identities for later
+# 我们在进行转换TSNEplot当中颜色的标记时，是需要控制object@indent的，所以第一步我们是先保存目前的identity到meta.data下的新的column
 pancreas_1 <- StashIdent(object = pancreas_1, save.name = "ClusterNames_0.6")
 
 pancreas_1 <- FindClusters(object = pancreas_1,
