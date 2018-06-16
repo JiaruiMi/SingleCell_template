@@ -621,7 +621,7 @@ library(scater)
 library(cowplot)
 pancreas_1_sce <- Convert(from = pancreas_1, to = 'sce')  # Convert函数是来自Seurat包的
 pancreas_1_sce
-p1 <- plotExpression(object = pancreas_1_sce, features = "ins", x = "ident") + 
+p1 <- plotExpression(object = pancreas_1_sce, features = "ins", x = "ident") +     # scater包中对表达量进行可视化
   theme(axis.text.x = element_text(angle = -45, hjust = 1))
 p1                                                                                                      
 
@@ -2765,9 +2765,16 @@ ggplot(as.data.frame(pData(pancreas.1)),
 
 
 
-#========================================================================================================
-#             比较不同的对单细胞转录组数据normalization方法, 特指测序文库大小的归一化 (生信技能树)
-#========================================================================================================
+#=====================================================================================================================
+#
+#  比较不同的对单细胞转录组数据normalization方法, 特指测序文库大小的归一化 (生信技能树，基于scater包)
+#
+#=====================================================================================================================
+# scater主要是用于单细胞转录组数据的pre-processing和quality control的，有比较严格的workflow
+# From raw RNA-seq reads to a clean, tidy dataset ready for downstream analysis
+# 主要就是读取scRNA上游分析处理得到的表达矩阵，加上每个样本的描述信息，形成矩阵之后，对样本和基因进行过滤。针对过滤后到的表达矩阵进行
+# 各种分类的可视化。  
+
 # 使用CPM去除文库大小影响
 # 之所以需要normalization，就是因为测序的各个细胞样品的总量不一样，所以测序数据量不一样，就是文库大小不同，
 # 这个因素是肯定需要去除。最简单的就是counts per million (CPM)，所有样本的所有基因的表达量都除以各自的文库
@@ -3898,7 +3905,7 @@ pheatmap(
 
 
 #=============================================================================================
-#                                      "Scater" package
+#                               "Scater" package 生信技能树
 #=============================================================================================
 # scater 这个R包很强大，是McCarthy et al. 2017 发表的，包含的功能有：
 # Automated computation of QC metrics
