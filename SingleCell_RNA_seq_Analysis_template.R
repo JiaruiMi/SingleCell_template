@@ -4304,3 +4304,182 @@ pheatmap::pheatmap(t(assigned$scores))
 # https://github.com/velocyto-team/velocyto.R/issues/2
 # 看一下这个文件的内容：~/.R/Makevars
 
+
+
+
+
+
+
+
+
+
+#===============================================================================================================
+#
+#                  SCDE package (Harvard University, http://hms-dbmi.github.io/scde/tutorials.html)
+#
+#===============================================================================================================
+# 关于这个R包
+# The SCDE package implements a set of statistical methods for analyzing single-cell RNA-seq data, including differential 
+# expression analysis (Kharchenko et al.) and pathway and geneset overdispersion analysis (Fan et al.) 
+# SCDE这个包集成了pagoda，其特点在于采用了多种统计学模型手段计算差异表达基因，并且可以作通路和基因集的过离散分析。
+
+# SCDE基于的统计学假说是，我们的reads counts table是服从两个统计学分布的，一个是负二项分布（这是针对哪些可以被检测到，在
+# RNA逆转录为DNA后可以被扩增的那一部分转录本）和low-level Poisson分布（这是针对那些不能被检测到，背景信号，往往是不能很好
+# 扩增或者因为其它原因没有被检测到）。基于上述分布可以用于发现细胞组间差异表达的基因。对于比较小的数据集，细胞的groups不是
+# 很多的情况，非常适合使用scde。
+
+# 整个分析是基于reads counts matrix，或者是经过测序文库大小进行校正后的matrix，但是其中每一个entry都必须是整数。这个包自带
+# 了Islam的数据集的子集，是ES/MEF datasets。
+
+
+######################################### Single-Cell Differential Expression Analysis ##################################
+
+#---------------------# Prepare dataset #---------------------#
+## load example dataset
+library(scde )
+data(es.mef.small)
+head(es.mef.small)
+colnames(es.mef.small)
+
+## factor determining cell types
+sg <- factor(gsub("(MEF|ESC).*", "\\1", colnames(es.mef.small)), levels = c("ESC", "MEF")) # ()扩起来的是pattern，用\\1来提取括号里的内容，有两个括号，则\\1和\\2分别指代第一和第二个括号
+
+## the group factor should be named accordingly
+names(sg) <- colnames(es.mef.small)  
+table(sg)
+
+## clean up the dataset
+cd <- clean.counts(es.mef.small, min.lib.size=1000, min.reads = 1, min.detected = 1)
+
+
+#---------------------# Fitting error models #---------------------#
+## 下一步是对gene的表达量进行fit error model，这个fitting的步骤是基于细胞之间比较之后选出的哪些robust genes。我们在这里设置参数groups = sg，这样这个
+## error model是在两种细胞类型当中独立进行的；如果我们忽略了这个参数，那么软件会自动将所有细胞作为一个整体进行fit。
+
+## 下面一步会非常费时，所以对于非常大的数据集要非常慎重使用scde：
+o.ifm <- scde.error.models(counts = cd, groups = sg, n.cores = 2, threshold.segmentation = TRUE, 
+                           save.crossfit.plots = FALSE, save.model.plots = FALSE, verbose = 1)
+
+
+## 当然针对这个测试数据，其实已经有事先计算好的结果了
+data(o.ifm)
+
+## The o.ifm is a dataframe with error model coefficients for each cell (rows). 每一行是一个细胞，存放的是error model coefficients
+head(o.ifm)
+## corr.a and corr.b are slope and intercept of the correlated component fit
+## conc.* refer to the concomitant fit
+## corr.theta is the NB over-dispersion
+## fail.r is the background Poisson rate (fixed).
+
+
+# filter out cells that don't show positive correlation with
+# the expected expression magnitudes (very poor fits)
+valid.cells <- o.ifm$corr.a > 0
+table(valid.cells)   # 比较好的是，经检验所有的40个细胞都是质量过关的。
+o.ifm <- o.ifm[valid.cells, ]
+
+
+# Finally, we need to define an expression magnitude prior for the genes. Its main function, however, is to define a grid 
+# of expression magnitude values on which the numerical calculations will be carried out.
+
+# estimate gene expression prior
+o.prior <- scde.expression.prior(models = o.ifm, counts = cd, length.out = 400, show.plot = TRUE)
+## Here we used a grid of 400 points, and let the maximum expression magnitude be determined by the default 0.999 
+## quantile (use max.value parameter to specify the maximum expression magnitude explicitly - on log10 scale).
+
+#---------------------# Testing for differential expression #---------------------#
+# 进行差异基因分析的时候，首先我们需要指定哪两组细胞用于比较
+# The factor elements correspond to the rows of the model matrix (o.ifm), and can contain NA values (i.e. cells that won't 
+# be included in either group). Here we key off the the ES and MEF names.
+
+## define two groups of cells
+groups <- factor(gsub("(MEF|ESC).*", "\\1", rownames(o.ifm)), levels  =  c("ESC", "MEF"))
+names(groups) <- row.names(o.ifm)
+groups
+
+## run differential expression tests on all genes.
+ediff <- scde.expression.difference(o.ifm, cd, o.prior, groups  =  groups, 
+                                    n.randomizations  =  100, n.cores  =  1, verbose  =  1)
+
+## top upregulated genes (tail would show top downregulated ones)
+head(ediff[order(ediff$Z, decreasing  =  TRUE), ])
+tail(ediff[order(ediff$Z, decreasing  =  TRUE), ])
+
+## 导出数据
+## write out a table with all the results, showing most significantly different genes (in both directions) on top
+write.table(ediff[order(abs(ediff$Z), decreasing = TRUE), ], 
+            file = "results.txt", row.names = TRUE, col.names = TRUE, sep = "\t", quote = FALSE)
+getwd()
+
+## 当然我们也可以作单个gene的差异基因表达分析，并且进行可视化
+scde.test.gene.expression.difference("Tdh", models = o.ifm, counts = cd, prior = o.prior)
+## 改图的最上和最下的图，展示的是每个细胞的表达的后验值（花花绿绿的颜色线条）和综合的后验值（黑色线条）
+## 中间那幅图是后验的表达值的fold change倍数，并且使用红色阴影高亮了95%的可信区间。
+
+
+
+#---------------------# Correcting for batch effects #---------------------#
+# 我们下面人为随机的建立batch composition，然后对上述结果重新进行分析
+## 随机过程，所以每次的结果会有出入
+batch <- as.factor(ifelse(rbinom(nrow(o.ifm), 1, 0.5) == 1, "batch1", "batch2"))
+table(batch)
+# check the interaction between batches and cell types (shouldn't be any)
+table(groups, batch)
+
+## test the Tdh gene again，比之前多了一个参数batch = batch
+scde.test.gene.expression.difference("Tdh", models = o.ifm, counts = cd, prior = o.prior, batch = batch)
+## 在上图中，灰色的线条是仅仅基于batch的结果得到的后验分布，top和bottom看上去非常类似，因此log2的fold change也就非常靠近0；
+## 黑色的先展示的是在进行batch校正前的log2. 我们看到batch correction 并没有导致峰值的位移，但是增加了ratio estimate的uncertainty
+## 这是因为我们又多额外控制了一个因素
+
+## batch correction也可以用于整个数据集
+## test for all of the genes
+ediff.batch <- scde.expression.difference(o.ifm, cd, o.prior, groups = groups, batch = batch, n.randomizations = 100, 
+                                          n.cores = 1, return.posteriors = TRUE, verbose = 1)
+
+
+# more detailed function
+## The scde.expression.difference method can return a more extensive set of results, including joint posteriors and the 
+## expression fold difference posteriors for all of the examined genes:
+## The joint posteriors can also be obtained explicitly for a particular set of cells:
+
+# calculate joint posterior for ESCs (set return.individual.posterior.modes=T if you need p.modes)
+jp <- scde.posteriors(models = o.ifm[grep("ESC",rownames(o.ifm)), ], cd, o.prior, n.cores = 1)
+
+## The error models fit the intercept and the slope of the NB "correlated" component, providing more consistent 
+## expression magnitude estimates among the cells. These can be obtain ed with a quick helper function:
+
+# get expression magntiude estimates
+o.fpm <- scde.expression.magnitude(o.ifm, counts = cd)
+
+## Drop-out probabilities (as a function of expression magnitudes) for different cells are useful for assessing the 
+## quality of the measurements:
+
+# get failure probabilities on the expresison range
+o.fail.curves <- scde.failure.probability(o.ifm, magnitudes = log((10^o.prior$x)-1))
+par(mfrow = c(1,1), mar = c(3.5,3.5,0.5,0.5), mgp = c(2.0,0.65,0), cex = 1)
+plot(c(), c(), xlim=range(o.prior$x), ylim=c(0,1), xlab="expression magnitude (log10)", ylab="drop-out probability")
+invisible(apply(o.fail.curves[, grep("ES",colnames(o.fail.curves))], 2, 
+                function(y) lines(x = o.prior$x, y = y,col = "orange")))
+
+invisible(apply(o.fail.curves[, grep("MEF", colnames(o.fail.curves))], 2, 
+                function(y) lines(x = o.prior$x, y = y, col = "dodgerblue")))
+
+## The drop-out probabilities (at a given expression magnitude, or at an observed count) can be useful in subsequent 
+## analysis
+
+# get failure probabilities on the expresison range
+o.fail.curves <- scde.failure.probability(o.ifm, magnitudes = log((10^o.prior$x)-1))
+# get self-fail probabilities (at a given observed count)
+p.self.fail <- scde.failure.probability(models = o.ifm, counts = cd)
+
+
+#---------------------# Adjusted distance meaures #---------------------#
+
+## 好像有点问题，建议：http://hms-dbmi.github.io/scde/diffexp.html
+
+
+
+
+
+
