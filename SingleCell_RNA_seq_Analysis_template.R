@@ -1292,7 +1292,7 @@ pie + coord_polar(theta = "y") +
   theme(axis.title.x=element_blank(), axis.title.y=element_blank())
 
 ########################################### Pseudotime分析 ###########################################
-# 主要目的是：Constructing Single Cell Trajectories
+# 主要目的是：Constructing Single Cell Trajectories，目前看来策略3最好，使用的dpFeature，与tutorial吻合度很高。
 
 # 发育过程中细胞状态是不断变化的，monocle包利用算法学习所有基因的表达模式来把每个细胞安排到各自的发展轨迹。 
 # 在大多数生物学过程中，参与的细胞通常不是同步发展的，其中很多细胞是处在transition state。只有单细胞转录组技术才能把处于该过程中
@@ -1303,11 +1303,11 @@ pie + coord_polar(theta = "y") +
 
 # 什么是Pseudotime：
 # Pseudotime是衡量单个细胞通过细胞分化等过程所发生的变化的指标。在许多生物过程中，细胞不能以完美的同步化方式进行。在诸如细胞分化的过程的
-## 单细胞表达研究中，捕获的细胞可能在分化方面广泛分布于不同的阶段。也就是说，在同一时间捕获的细胞群体中，一些细胞可能远在前方，而另一些
+# 单细胞表达研究中，捕获的细胞可能在分化方面广泛分布于不同的阶段。也就是说，在同一时间捕获的细胞群体中，一些细胞可能远在前方，而另一些
 # 细胞甚至可能尚未开始该过程。当你想了解随着细胞从一个状态转换到另一个状态时发生的变化顺序，这种异步会产生重大问题。追踪同时捕获的细胞表达
 # 产生非常压缩的基因动力学，并且该基因表达的明显变异性将非常高。通过按照学习得到的轨迹(trajectory)的进度对每个细胞进行排序，Monocle可以缓解由于不同步
 # 导致的问题。 Monocle并不追踪基因的表达随时间变化的变化，而是追踪基因表达沿学习得到的轨迹(trajectory)进展的函数，我们称之为pseudotime。
-# pseudotime是一个抽象的进展单位：它就是沿着最短路径测量的一个细胞和轨迹开始之间的距离。轨迹的总长度是根据细胞在从起始状态移动到结束状态
+# pseudotime是一个抽象的进展单位：它就是沿着最短路径测量的一个细胞到轨迹开始之间的距离。轨迹的总长度是根据细胞在从起始状态移动到结束状态
 # 时经历的转录变化总量来定义的。
 
 # 在pseudotime中我们可以得到的两个重要的结果：
@@ -1333,6 +1333,9 @@ pie + coord_polar(theta = "y") +
 # 在这里我们使用的是简化版的筛选gene，但是Monocle明确建议使用一种称之为"dpFeature"的方法来筛选gene（见后，搜索dpFeature）
 
 # 无监督的Pseudotime分析, 先不要执行上方impute cell type的环节
+
+# 作者之后的分析是选用了HSMM_myo这个数据亚集。
+
 HSMM_myo <- HSMM[,pData(HSMM)$CellType == "Myoblast"]   
 HSMM_myo <- estimateDispersions(HSMM_myo)
 ## Warning: Deprecated, use tibble::rownames_to_column() instead.
@@ -1345,12 +1348,13 @@ HSMM_myo <- estimateDispersions(HSMM_myo)
 diff_test_res <- differentialGeneTest(HSMM_myo[expressed_genes,],     # 这一步比较费时
                                       fullModelFormulaStr="~Media")
 ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
+
 ### Choosing genes based on differential analysis of time points is often highly effective, but what if we don't have time series data? 
 ### If the cells are asynchronously moving through our biological process (as is usually the case), Monocle can often reconstruct their 
 ### trajectory from a single population captured all at the same time. 
 
 
-## 策略2：Selecting genes with high dispersion across cells
+## 策略2：Selecting genes with high dispersion across cells，这个是常规的根据表达量和dispersion的关系，找到HVGs
 disp_table <- dispersionTable(HSMM_myo)
 ordering_genes <- subset(disp_table, 
                          mean_expression >= 0.5 & 
@@ -1364,13 +1368,13 @@ plot_ordering_genes(HSMM_myo)
 ## Warning: Transformation introduced infinite values in continuous y-axis
 
 
-##### Trajectory step 2: reduce data dimensionality
-## 挑选变异度大的基因，如图上图所示，数据降维到可以可视化(1-2维)
-HSMM_myo <- reduceDimension(HSMM_myo, max_components=2, method = 'DDRTree')
+##### Trajectory step 2: reduce data dimensionality，注意这边使用的数据降维方法不是PCA，而是reverse graph embedding
+## 挑选变异度大的基因，如图上图所示，数据降维到可以可视化(1-2维), max_components确认降到几维
+HSMM_myo <- reduceDimension(HSMM_myo, max_components=2, method = 'DDRTree')  
 
 
 ##### Trajectory step 3: order cells along the trajectory：万事具备，下面就是用orderCells函数来给细胞排排序
-HSMM_myo <- orderCells(HSMM_myo)
+HSMM_myo <- orderCells(HSMM_myo) # 使用root_state 参数来指认beginning，通过调整参数reverse能够更改beginning和end的位置
 pData(HSMM_myo)
 ## 排序好的细胞可以直接按照发育顺序可视化
 plot_cell_trajectory(HSMM_myo, color_by="Hours")
@@ -1403,6 +1407,8 @@ plot_cell_trajectory(HSMM_myo, color_by = "State") +
 ## biological knowledge of the system. For example, in this experiment, a highly proliferative population of progenitor cells are 
 ## generating two types of post-mitotic cells. So the root should have cells that express high levels of proliferation markers. 
 ## We can use the jitter plot to pick figure out which state corresponds to rapid proliferation:
+## 确定树形结构的根有的时候是需要先验知识的，比如这个例子中progenitors分化位两种终末分化细胞，所以树形结构的根应该是那些表达比较多
+## 增殖标记的细胞marker，我们使用jitter plot来看一下这些基因高表达在哪一个state
 blast_genes <- row.names(subset(fData(HSMM_myo),
                                 gene_short_name %in% c("CCNB2", "MYOD1", "MYOG")))
 plot_genes_jitter(HSMM_myo[blast_genes,],
@@ -1411,7 +1417,7 @@ plot_genes_jitter(HSMM_myo[blast_genes,],
 
 
 
-## 把gene映射到pseudotime上面，x轴是pseudotime
+## 为了验证这个顺序是正确的，我们可以把一些myogenic process的marker gene映射到pseudotime上面，x轴是pseudotime
 HSMM_expressed_genes <-  row.names(subset(fData(HSMM_myo),
                                           num_cells_expressed >= 10))
 HSMM_filtered <- HSMM_myo[HSMM_expressed_genes,]
@@ -1421,7 +1427,9 @@ cds_subset <- HSMM_filtered[my_genes,]
 plot_genes_in_pseudotime(cds_subset, color_by = "Hours")
 
 
-##### Alternative choices for ordering genes -- for STEP 3 --Ordering based on genes that differ between clusters
+##### Alternative choices for ordering genes (策略3) -- for STEP 3 --Ordering based on genes that differ between clusters
+
+## Recommended
 ## Ordering based on genes that differ between clusters(筛选gene用于order cell，我们选用dpFeature)
 ## dpFeature的第一步是选择那些至少在5%的细胞当中有表达的gene
 HSMM_myo <- detectGenes(HSMM_myo, min_expr = 0.1) # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
@@ -1464,13 +1472,40 @@ HSMM_myo <- clusterCells(HSMM_myo,
 plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Cluster)')
 plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Hours)')
 
-##### Alternative choices for ordering genes -- for STEP 3 --Ordering cells using known marker genes
+### 当我们确认clustering是有意义的时候，我们可以使用差异基因分析来提取那些区分不同cluster的gene，这一步很耗时
+clustering_DEG_genes <-
+  differentialGeneTest(HSMM_myo[HSMM_expressed_genes,],
+                       fullModelFormulaStr = '~Cluster',
+                       cores = 1)
+
+### 然后我们选取前1000个significant gene来作为ordering gene
+HSMM_ordering_genes <-
+  row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
+
+HSMM_myo <-
+  setOrderingFilter(HSMM_myo,
+                    ordering_genes = HSMM_ordering_genes)
+
+HSMM_myo <-
+  reduceDimension(HSMM_myo, method = 'DDRTree')
+
+HSMM_myo <-
+  orderCells(HSMM_myo)
+
+HSMM_myo <-
+  orderCells(HSMM_myo, root_state = GM_state(HSMM_myo))
+
+plot_cell_trajectory(HSMM_myo, color_by = "Hours")
+
+##### Alternative choices for ordering genes （策略4） -- for STEP 3 --Ordering cells using known marker genes
+
 ## 使用非监督聚类方法有助于我们无偏移地进行分析，然而有时计算机会执迷于一些与你所探讨的生物学问题无关的gene，比如细胞周期相关gene，这个时候
 ## 使用半监督聚类方法就能很好的弥补了。方法是，首先使用CellTypeHierarchy来定义一些gene，然后通过这些gene找到co-vary的gene，最后基于这些所有
 ## 的gene进行非监督的聚类，所以非监督和半监督的聚类方法的差别仅仅在于挑选的是哪些gene进行ordering。
 ## 比如myoblast首先逃离细胞周期，经过一系列的变化，最终表达参与肌细胞收缩的关键基因。因此我们可以标记细胞周期基因cyclin B2(CCNB2)和myotubes
 ## gene, 比如myosin heavy chain(MYH3)
 
+## 这里的结果于tutorial有一定的出入
 CCNB2_id <-
   row.names(subset(fData(HSMM_myo), gene_short_name == "CCNB2"))
 MYH3_id <-
@@ -1494,18 +1529,19 @@ cth <- addCellType(cth,
 HSMM_myo <- classifyCells(HSMM_myo, cth)
 
 
-### 找到co-vary的gene
+### 找到co-vary的gene (in either direction) with these two "bellweather" genes
 marker_diff <- markerDiffTable(HSMM_myo[HSMM_expressed_genes,],
                                cth,
-                               cores = 1)
+                               cores = 8)
 #semisup_clustering_genes <-
 #row.names(subset(marker_diff, qval < 0.05))
 semisup_clustering_genes <-
   row.names(marker_diff)[order(marker_diff$qval)][1:1000]
 
-### 使用前1000个gene进行ordering
+### 使用前1000个gene进行ordering，Using the top 1000 genes for ordering produces a trajectory that's highly similar to the one we obtained 
+### with unsupervised methods, but it's a little "cleaner".
 HSMM_myo <- setOrderingFilter(HSMM_myo, semisup_clustering_genes)
-#plot_ordering_genes(HSMM_myo)
+plot_ordering_genes(HSMM_myo)
 HSMM_myo <- reduceDimension(HSMM_myo, max_components = 2,
                             method = 'DDRTree', norm_method = 'log')
 HSMM_myo <- orderCells(HSMM_myo)
