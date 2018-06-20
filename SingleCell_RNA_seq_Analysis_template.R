@@ -1199,7 +1199,7 @@ head(fData(HSMM))
 ## 所以这里也区分一下 培养基， a high-mitogen growth medium (GM) to a low-mitogen differentiation medium (DM). 
 plot_cell_clusters(HSMM, 1, 2, color="Media", cell_size = 2.5)
 
-## Remove batch effect
+## Remove batch/uninteresting effect
 ## 因为我们假设就2种细胞类型，所以在做聚类的时候可以把这个参数添加进去(去除medium带来的混杂因素)，这样可以去除无关变量的干扰。
 ## Monocle allows us to subtract the effects of "uninteresting" sources of variation to reduce their 
 ## impact on the clustering. You can do this with the residualModelFormulaStr argument to clusterCells 
@@ -1210,29 +1210,38 @@ HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 2, reduction_method = 
 HSMM <- clusterCells(HSMM, num_clusters=2)
 ## Distance cutoff calculated to 1.284778
 pData(HSMM)
-plot_cell_clusters(HSMM, 1, 2, color="CellType", cell_size = 4) # cell_size只能对应一个确定的数值，alpha还是不能用
+plot_cell_clusters(HSMM, 1, 2, color="CellType", cell_size = 2.5) # cell_size只能对应一个确定的数值，alpha还是不能用
 
 ## Now that we've accounted for some unwanted sources of variation, we're ready to take another crack at 
 ## classifying the cells by unsupervised clustering:
-HSMM <- clusterCells(HSMM, num_clusters = 2)
+HSMM <- clusterCells(HSMM, num_clusters = 3)  # 这边比较奇怪的是，设置num_clusters = 3才能和tutorial大致一致
+## 这一点在Dave Tang的数据里面也有体现，你设定多少个cluster只不过是做多的cluster的可能性
 plot_cell_clusters(HSMM, 1, 2, color = 'Cluster') + facet_wrap(~CellType)   # pData中的Cluster存在问题，需要debug一下
+## 我们发现大部分的myoblst在一个cluster当中，fibroblast则富集了另一部分的cluster，那些unknown的则两种cluster的都有，这可能是因为我们选择的marker gene
+## 的特异性不够或者是CellTypeHierarchy function的问题，也可能是因为suboptimal clustering。所以绝对的非监督聚类在Monocle看来非最优解，半监督聚类
+## 能够解决部分问题
 
+############ 半监督聚类方法 ############
 
 ## 半监督聚类，也就是利用一部分marker genes来进行分析。正如之前所说，如果我们只单单用一个marker来指示细胞的类型的
 ## 时候，某些细胞不能很好的区分，因此我们需要用那些与指明的marker gene有相同表达差异的gene(co-vary)，构建一个大的gene list
-## 这里的差异分析非常耗时
+## 这一步操作是在picking genes that were highly expressed and highly variable 之前进行的。返回的结果是
+## A table of differential expression test results
+## 这里的差异分析非常耗时，这个步骤会remove所有ambiguous和unknown cells
 marker_diff <- markerDiffTable(HSMM[expressed_genes,], 
                                cth, 
                                residualModelFormulaStr="~Media + num_genes_expressed",
-                               cores=1)
+                               cores=8)
 head(marker_diff)
 ### The function markerDiffTable takes a CellDataSet and a CellTypeHierarchy and classifies all the cells into 
 ### types according to your provided functions. It then removes all the "Unknown" and "Ambiguous" functions 
-### before identifying genes that are differentially expressed between the types. Often it's best to pick the 
+### before identifying genes that are differentially expressed between the types. The function then returns a 
+### data frame of test results, and you can use this to pick the genes you want to use for clustering. Often it's best to pick the 
 ### top 10 or 20 genes that are most specific for each cell type. This ensures that the clustering genes aren't 
 ### dominated by markers for one cell type. You generally want a balanced panel of markers for each type if 
 ### possible. Monocle provides a handy function for ranking genes by how restricted their expression is for 
-### each type.
+### each type. 说白了就是给一个差异表达的基因列表，根据这里面的gene进行排序，依据是how restricted their expression is for 
+### each type
 
 ## 就是对每个基因增加了pval和qval两列信息，挑选出那些在不同media培养条件下显著差异表达的基因，310个，
 candidate_clustering_genes <- row.names(subset(marker_diff, qval < 0.01))
@@ -1245,7 +1254,7 @@ head(selectTopMarkers(marker_spec, 3)) # 这句代码返回myoblast和fibroblast
 ### 细胞类型的marker genes或者用这些marker来定义新的细胞类型。
 
 # To cluster the cells, we'll choose the top 500 markers for each of these cell types:（这句话没有理解，为什么是每种细胞类型500个gene？）
-semisup_clustering_genes <- unique(selectTopMarkers(marker_spec, 500)$gene_id)
+semisup_clustering_genes <- unique(selectTopMarkers(marker_spec, 500)$gene_id)  # 实际只有310个
 HSMM <- setOrderingFilter(HSMM, semisup_clustering_genes)
 plot_ordering_genes(HSMM)
 ## 重新挑选基因，只用黑色高亮的基因来进行聚类。
@@ -1255,7 +1264,8 @@ plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log', 计算PC
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 3, 
                         norm_method = 'log',
                         reduction_method = 'tSNE', 
-                        residualModelFormulaStr="~Media + num_genes_expressed", verbose = T) 
+                        residualModelFormulaStr="~Media + num_genes_expressed", 
+                        verbose = T) 
 HSMM <- clusterCells(HSMM, num_clusters=2) 
 ## Distance cutoff calculated to 1.02776
 plot_cell_clusters(HSMM, 1, 2, color="CellType")
@@ -1269,7 +1279,7 @@ plot_cell_clusters(HSMM, 1, 2, color="CellType")
 ## If there's no cell type thats above the threshold, the cluster is marked "Unknown". Thus, Monocle helps you impute the type of each 
 ## cell even in the presence of missing marker data.
 HSMM <- clusterCells(HSMM,
-                     num_clusters=2, 
+                     num_clusters=3,    # 同理，tutorial这边设定的最大的num_cluster = 2，但是实际运行的时候需要设置为3才能够给出相同结果
                      frequency_thresh=0.1,
                      cell_type_hierarchy=cth)
 ## Distance cutoff calculated to 1.02776
