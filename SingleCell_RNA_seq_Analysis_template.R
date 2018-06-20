@@ -309,7 +309,7 @@ head(x = GetGeneLoadings(object = pancreas_1, reduction.type = "pca", dims.use =
 head(x = GetDimReduction(object = pancreas_1, reduction.type = "pca", slot = "sdev"))
 
 
-############################################## MDS降维，无需求别run ##################################
+############################################## MDS降维，无需求，先别run ##################################
 # 我们还可以计算一些Seurat当中没有定义的数据降维方法，比如MDS, 
 ####
 # Before running MDS, we first calculate a distance matrix between all pairs of cells.  Here we use a simple euclidean distance 
@@ -933,7 +933,7 @@ head(HSMM_sample_sheet)
 # this gene.
 
 
-###################################### 构建S4对象，CellDataSet ######################################
+###################################### 如何从表达矩阵开始构建S4对象，CellDataSet ######################################
 # 读取矩阵的推荐层级：raw counts(UMI) > relative counts (FPKM/TPM) > raw counts(without UMI)
 # 针对上述推荐层级，raw counts(UMI)在导入CellDataSet对象之前千万不要normalization或者把它变成FPKM/TPM的data(因为UMI raw counts是最优输入)。
 # 主要是读取表达矩阵和样本描述信息，这里介绍两种方式，一种是读取基于 subjunc+featureCounts 分析后的reads counts矩阵，
@@ -989,12 +989,13 @@ tung
 ## Monocle feature不好使。另外值得注意的是，对于相对表达量数据，如RPKM/TPM，我们在进行处理的时候，会将其转换成transcript counts(通过
 ## 使用函数relative2abs())，转换产生的绝对counts就服从负二项分布了，可以使用negbinomial.size()，并且比相对值使用tobit()来得更好。
 
-
+###################################### 我们使用内置数据来进行Monocle2的分析流程 ######################################
 # 在这里我们读取HSMMSingleCell包中的测试数据，或者使用内置数据个构建S4对象：
 getwd()
 pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
 fd <- new("AnnotatedDataFrame", data = HSMM_gene_annotation)
 
+# 针对RPKM为原始输入的情况，建议先基于RPKM，构建CellDataSet对象；然后用relative2abs函数将其转换成RPC数据，再重新构建对象
 # First create a CellDataSet from the relative expression levels
 
 ## 这里仅仅是针对rpkm表达矩阵的读取，我们选取的统计学模型是tobit，这种方法没有把rpkm转换成counts的方法好
@@ -1008,7 +1009,7 @@ HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
 
 # Next, use it to estimate RNA counts. RPC的含义是mRNAs per cell; rpkm格式的表达值需要转换成reads counts之后才可以进行下游分析
 # Monocle 2 includes an algorithm called Census which performs this conversion. Census算法就是用来解决这个转换问题的。
-rpc_matrix <- relative2abs(HSMM)    # 从校正后的相对值转换为绝对值
+rpc_matrix <- relative2abs(HSMM, method = 'num_genes')    # 从校正后的相对值转换为绝对值
 rpc_matrix[1:10,1:5] 
 
 # Now, make a new CellDataSet using the RNA counts，既然转变成了counts data，则服从了负二项分布的规律
@@ -1016,7 +1017,7 @@ rpc_matrix[1:10,1:5]
 # calculated by Monocle). Recommended for most users. 同时lowerDetectionLimit也要相应更改。
 HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
                        phenoData = pd, 
-                       featureData = fd,
+                       featureData = fd,        # 因为我们使用了Census mRNA count value，我们相应的也要更改lowerDetectionLimit来反应转换后表达量的scale
                        lowerDetectionLimit=0.5,  #  we have changed the value of lowerDetectionLimit to reflect the new scale of expression
                        expressionFamily=negbinomial.size())   # 注意，将RPKM或者TPM改成了counts以后，统计学模型也就相应改成了负二项分布
 
@@ -1046,6 +1047,7 @@ length(expressed_genes) ## 只剩下了14224个基因
 ## 结果能不能在后续进行使用，对细胞(样本)进行过滤。
 print(head(pData(HSMM))) 
 
+## This dataset has already been filtered using the following commands:
 valid_cells <- row.names(subset(pData(HSMM),     # 根据pData当中的参数，对细胞进行过滤
                                 Cells.in.Well == 1 &
                                   Control == FALSE &
@@ -1068,25 +1070,30 @@ qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
   geom_vline(xintercept = lower_bound) +
   geom_vline(xintercept = upper_bound)
 
-# 执行过滤并可视化检查一下；我们将不满足要求的细胞过滤掉以后，对每个细胞的表达量进行log转换后，理论上应该服从正态分布。
-## 上面已经根据基因表达情况以及样本的总测序数据选择好了阈值，下面就可以可视化并且对比检验一下执行过滤与否的区别。
+
+## 上面已经根据基因表达情况以及样本的总测序数据选择好了阈值，下面就可以可视化并且对比检验一下执行过滤与否的区别。我们滤去过多的mRNA是为了减少doublets
+## 和triplets的情况；这种过滤是非常有用的，尤其是目前的方法不能通过样本制备的机器来发现每个细胞的捕获情况。
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs > lower_bound & 
                pData(HSMM)$Total_mRNAs < upper_bound]                                 
 HSMM <- detectGenes(HSMM, min_expr = 0.1)  # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
 HSMM
 
-# Log-transform each value in the expression matrix.
+## 执行过滤并可视化检查一下；我们将不满足要求的细胞过滤掉以后，对每个细胞的表达量进行log转换后，理论上应该服从正态分布。
+## Log-transform each value in the expression matrix.
 L <- log(exprs(HSMM[expressed_genes,]))
-# Standardize each gene, so that they are all on the same scale, then melt the data with plyr so we can plot it easily
+## Standardize each gene, so that they are all on the same scale, then melt the data with plyr so we can plot it easily
 melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
-# Plot the distribution of the standardized gene expression values.
+## Plot the distribution of the standardized gene expression values.
 qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, size=0.5, color='red') + 
   xlab("Standardized log(FPKM)") +
   ylab("Density")
 
 
-########################################### 聚类 ###########################################
-# 根据指定基因对单细胞转录组表达矩阵进行分类(Classify cells with known marker genes)
+########################################### Classifying cells by type  ###########################################
+
+#----------------------------------# 根据marker gene进行有监督的聚类方法 #----------------------------------#
+
+# 根据指定基因（marker gene）对单细胞转录组表达矩阵进行分类(Classify cells with known marker genes)，相当于一个有监督的分类
 # leverage your knowledge of key marker genes to quickly and easily classify your cells by type:
 ## 下面这个代码只适用于这个测试数据， 主要是生物学背景知识，用MYF5基因和ANPEP基因来对细胞进行分类，可以区分Myoblast和Fibroblast。
 ## 如果是自己的数据，建议多读读paper看看如何选取合适的基因，或者干脆跳过这个代码。
@@ -1095,6 +1102,7 @@ qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, 
 ## each cell, and return TRUE to tell Monocle that a cell meets the criteria defined by the function. So you could have one function 
 ## that returns TRUE for cells that express myoblast-specific genes, another function for fibroblast-specific genes, etc. Here's an 
 ## example of such a set of "gating" functions
+# 把对应于MYF5和ANPEP的ensembl gene id给提取出来。
 MYF5_id <- row.names(subset(fData(HSMM), gene_short_name == "MYF5"))
 ANPEP_id <- row.names(subset(fData(HSMM), gene_short_name == "ANPEP"))
 ## 这里选取的基因取决于自己的单细胞实验设计
@@ -1112,12 +1120,13 @@ ANPEP_id <- row.names(subset(fData(HSMM), gene_short_name == "ANPEP"))
 
 ## 首先使用newCellTypeHierarchy()进行初始化
 cth <- newCellTypeHierarchy() 
+str(cth)
 
-## 然后添加对细胞进行分类的内容
+## 然后添加对细胞进行分类的条件
 cth <- addCellType(cth, "Myoblast", classify_func = function(x) { x[MYF5_id,] >= 1 })
 cth <- addCellType(cth, "Fibroblast", classify_func = function(x){ x[MYF5_id,] < 1 & x[ANPEP_id,] > 1 })
 
-## 使用classifyCells()函数对每个细胞进行有监督的分类
+## 最后使用classifyCells()函数对每个细胞进行有监督的分类，注意，在这个时候才把我们的数据对象HSMM添加进去
 HSMM <- classifyCells(HSMM, cth, 0.1) ## 这个时候的HSMM已经被改变了，增加了属性(phenoData中的CellType)。
 HSMM 
 ## The function classifyCells applies each gating function to each cell, classifies the cells according to the 
@@ -1132,8 +1141,8 @@ pie <- ggplot(pData(HSMM), aes(x = factor(1), fill = factor(CellType))) +
 pie + coord_polar(theta = "y") +
   theme(axis.title.x = element_blank(), axis.title.y = element_blank())
 
-### 可以看到还有很大一部分细胞仅仅是根据这两个基因的表达量是无法成功的归类的。这个是很正常的，
-### 因为单细胞转录组测序里面的mRNA捕获率不够好。 通过这个步骤成功的给HSMM这个S4对象增加了一个属性，就是CellType，
+### 可以看到还有很大一部分细胞被归为"unknown"，仅仅是根据这两个基因的表达量是无法成功的归类的。这个是很正常的，
+### 因为单细胞转录组测序里面的mRNA捕获率不够好，有的细胞表达了MYF5，但是没有检测到转录本。 通过这个步骤成功的给HSMM这个S4对象增加了一个属性，就是CellType，
 ### 在下面的分析中会用得着。注意Unknown意味这一个条件都没有满足；ambiguous意味着满足多个分类指标
 ### Note that many cells are marked "Unknown". This is common, largely because of the low rate of mRNA capture 
 ### in most single-cell RNA-Seq experiments. A cell might express a few MYF5 mRNAs, but we weren't lucky enough 
@@ -1143,10 +1152,15 @@ pie + coord_polar(theta = "y") +
 ### than half of the cells! 针对这些Unknown的细胞，可以考虑使用无监督的分类方法，基于的函数是clusterCells。它基于
 ### 的方法是即使只检测到了MYF5，但是表达了许多其它的myoblast基因
 
+#----------------------------------# 不依赖marker gene的无监督聚类方法 #----------------------------------#
 
 ## 无监督聚类: 这里需要安装最新版R包才可以使用里面的一些函数，因为上面的步骤基于指定基因的表达量进行细胞分组会漏掉很多信息，
 ## 使用无监督聚类，相当于要对一部分unknown cell进行impute，使用的函数是clusterCells()。它是基于整体的基因表达情况来帮助聚类的。
-## 比如某一些细胞缺乏MYF5，但是它们表达相当一部分myoblast特征性基因，那么仍然可以将这些细胞归类到myoblast当中去。
+## 比如某一些细胞缺乏MYF5，但是它们表达相当一部分myoblast特征性基因，那么仍然可以将这些细胞归类到myoblast当中去。当然clusterCells()函数也可以在半监督
+## 聚类的场景下使用，这样借助了一部分已有的知识来辅助算法的计算。
+
+############ 绝对无监督的聚类方法 ############
+
 ## 当然设计到聚类，就一定有降维去噪声的步骤。
 ## 所以需要更好的聚类方式。在进行无监督的分类的时候，筛选高表达的HVG可以尽可能的提高信噪比
 ## 首先我们挑选表达量比较高的基因:
@@ -1173,14 +1187,17 @@ plot_pc_variance_explained(HSMM, return_all = F) # norm_method = 'log', 这一�
 HSMM <- reduceDimension(HSMM, max_components=2, num_dim = 6,     # num_dim参数决定我们要纳入几个PC，如果不指定的话，默认值是50个PC
                         reduction_method = 'tSNE', verbose = T) 
 HSMM <- clusterCells(HSMM, num_clusters = 2)
+HSMM <- HSMM1
 ## 这里先用tSNE的聚类方法处理HSMM数据集，并可视化展示；这个函数目前有问题，尤其是加入markers这个参数
-plot_cell_clusters(HSMM, 1, 2, color_by  = 'CellType', markers = c("MYF5", "ANPEP"))  # Monocle默认使用tSNE来进行cluster的可视化,但是这个函数有点问题
-### 似乎去除markers = c("MYF5", "ANPEP")就正确了
+plot_cell_clusters(HSMM, 1, 2, color_by  = "CellType",
+                   markers = c("MYF5")) # Monocle默认使用tSNE来进行cluster的可视化,但是这个函数有点问题
+plot_cell_clusters(HSMM, 1, 2, color_by  = "CellType", cell_size = 2.5)
+### 似乎去除markers = c("MYF5", "ANPEP")就正确了, 似乎markers和cell_size两个参数都deprecated了。
 ## 可以看到并不能把细胞类型完全区分开，这个是完全有可能的，因为虽然是同一种细胞，但是有着不同的培养条件。
 head(pData(HSMM)) # 在这里另外一个问题是pdata中的Cluster，只有一个，这是不符合常理的，需要debug一下，已经在github上提问。
 head(fData(HSMM))
 ## 所以这里也区分一下 培养基， a high-mitogen growth medium (GM) to a low-mitogen differentiation medium (DM). 
-plot_cell_clusters(HSMM, 1, 2, color="Media")
+plot_cell_clusters(HSMM, 1, 2, color="Media", cell_size = 2.5)
 
 ## Remove batch effect
 ## 因为我们假设就2种细胞类型，所以在做聚类的时候可以把这个参数添加进去(去除medium带来的混杂因素)，这样可以去除无关变量的干扰。
