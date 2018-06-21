@@ -934,7 +934,10 @@ head(HSMM_sample_sheet)
 
 
 ###################################### 如何从表达矩阵开始构建S4对象，CellDataSet ######################################
-# 读取矩阵的推荐层级：raw counts(UMI) > relative counts (FPKM/TPM) > raw counts(without UMI)
+# 读取矩阵的推荐层级：raw counts(UMI) > relative counts (FPKM/TPM) > raw counts(without UMI)；所以需要思考一下，如果我们手里的单细胞数据是全
+# 长转录本测序建库方案得到的结果（比如SMART-SEQ2），我们应该如何处理；可能比较优化的方案是将transcript counts转换成RPKM/TPM，然后进行导入。这也是
+# 为什么Monocle的online tutorial重点讲解了RPKM/TPM的作为原始数据导入的情况。
+
 # 针对上述推荐层级，raw counts(UMI)在导入CellDataSet对象之前千万不要normalization或者把它变成FPKM/TPM的data(因为UMI raw counts是最优输入)。
 # 主要是读取表达矩阵和样本描述信息，这里介绍两种方式，一种是读取基于 subjunc+featureCounts 分析后的reads counts矩阵，
 # 一种是读取 tophat+cufflinks 得到的RPKM表达矩阵
@@ -985,11 +988,18 @@ tung
 
 ## 针对expressionFamily一共有4种参数可供选择，negbinomial.size()，negbinomial()，tobit()，gaussianff()。其中第一种和第三种比较常用。
 ## negbinomial()会比negbinomial.size()稍稍更加准确一点，但是运行速度慢了不少，所以不建议使用。tobit()是专门针对FPKM和RPMK的。gaussianff()
-## 是针对已经normalization后正态分布的数据。正如之前所说Monocle是不建议先normalize在构建CellDataSet对象的，而且使用这个方法，后续部分
+## 是针对已经normalization后正态分布的数据。正如之前所说Monocle是不建议先normalize再构建CellDataSet对象的，而且使用这个方法，后续部分
 ## Monocle feature不好使。另外值得注意的是，对于相对表达量数据，如RPKM/TPM，我们在进行处理的时候，会将其转换成transcript counts(通过
 ## 使用函数relative2abs())，转换产生的绝对counts就服从负二项分布了，可以使用negbinomial.size()，并且比相对值使用tobit()来得更好。
 
+## 简而言之：
+## counts data或者经过relative2abs()的data，使用negbinomial.size()
+## RPKM/TPM data，tobit()
+## log转换后的data，gaussianff()，但是有些后续功能无法使用。
+
+
 ###################################### 我们使用内置数据来进行Monocle2的分析流程 ######################################
+# Start from here
 # 在这里我们读取HSMMSingleCell包中的测试数据，或者使用内置数据个构建S4对象：
 getwd()
 pd <- new("AnnotatedDataFrame", data = HSMM_sample_sheet)
@@ -1010,24 +1020,47 @@ HSMM <- newCellDataSet(as.matrix(HSMM_expr_matrix),
 # Next, use it to estimate RNA counts. RPC的含义是mRNAs per cell; rpkm格式的表达值需要转换成reads counts之后才可以进行下游分析
 # Monocle 2 includes an algorithm called Census which performs this conversion. Census算法就是用来解决这个转换问题的。
 rpc_matrix <- relative2abs(HSMM, method = 'num_genes')    # 从校正后的相对值转换为绝对值
-rpc_matrix[1:10,1:5] 
+rpc_matrix[1:10,1:5]  # 是一个密集矩阵
 
 # Now, make a new CellDataSet using the RNA counts，既然转变成了counts data，则服从了负二项分布的规律
 # 统计学模型相应的进行改变：Negative binomial distribution with fixed variance (which is automatically 
 # calculated by Monocle). Recommended for most users. 同时lowerDetectionLimit也要相应更改。
-HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
-                       phenoData = pd, 
+HSMM <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),    # as()函数是将对象转换为一个特定的class，这边我们将
+                       phenoData = pd,                               # 一个密集矩阵rpm_matrix转换为一个稀疏矩阵
                        featureData = fd,        # 因为我们使用了Census mRNA count value，我们相应的也要更改lowerDetectionLimit来反应转换后表达量的scale
                        lowerDetectionLimit=0.5,  #  we have changed the value of lowerDetectionLimit to reflect the new scale of expression
                        expressionFamily=negbinomial.size())   # 注意，将RPKM或者TPM改成了counts以后，统计学模型也就相应改成了负二项分布
+
+
+## 针对CellRanger处理得到的MTX格式文件，因为其本身就是稀疏矩阵的格式，可以直接读入，而不要一开始转换成密集矩阵
+## 具体操作方法见如下：
+###
+# cellranger_pipestance_path <- "/path/to/your/pipeline/output/directory"
+# gbm <- load_cellranger_matrix(cellranger_pipestance_path)
+
+# fd <- fData(gbm)
+
+# The number 2 is picked arbitrarily in the line below.
+# Where "2" is placed you should place the column number that corresponds to your
+# featureData's gene short names.
+
+# colnames(fd)[2] <- "gene_short_name"
+
+# gbm_cds <- newCellDataSet(exprs(gbm),
+#                          phenoData = new("AnnotatedDataFrame", data = pData(gbm)),
+#                          featureData = new("AnnotatedDataFrame", data = fd),
+#                          lowerDetectionLimit = 0.5,
+#                          expressionFamily = negbinomial.size())
+###
+
 
 ## 下面的分析，都基于内置数据构建的S4对象，HSMM
 
 # 必要的矫正（量化因子和散度）：Size factors help us normalize for differences in mRNA recovered across cells, 
 # and "dispersion" values will help us perform differential expression analysis later.
-# 这两个estimate都是针对负二项分布的数据才有用。
-HSMM <- estimateSizeFactors(HSMM)
-HSMM <- estimateDispersions(HSMM)
+# 这两个estimate都是针对负二项分布的数据才有用，即在构建CDS对象的时候使用的negbinomial()或negbinomial.size()
+HSMM <- estimateSizeFactors(HSMM)   # 校正细胞之间的文库大小的差异
+HSMM <- estimateDispersions(HSMM)    # 差异基因的表达
 ### Warning: Deprecated, use tibble::rownames_to_column() instead.
 ### 至此，我们的HSMM构建完成，可以进行后续的分析了。
 
@@ -1048,19 +1081,21 @@ length(expressed_genes) ## 只剩下了14224个基因
 print(head(pData(HSMM))) 
 
 ## This dataset has already been filtered using the following commands:
-valid_cells <- row.names(subset(pData(HSMM),     # 根据pData当中的参数，对细胞进行过滤
-                                Cells.in.Well == 1 &
-                                  Control == FALSE &
-                                  Clump == FALSE &
-                                  Debris == FALSE &
-                                  Mapped.Fragments > 1000000))
-HSMM <- HSMM[,valid_cells]
+# valid_cells <- row.names(subset(pData(HSMM),     # 根据pData当中的参数，对细胞进行过滤
+#                                Cells.in.Well == 1 &
+#                                  Control == FALSE &
+#                                  Clump == FALSE &
+#                                  Debris == FALSE &
+#                                  Mapped.Fragments > 1000000))
+# HSMM <- HSMM[,valid_cells]
 
 # 基于样本表达量进行过滤，以下代码说白了就是眼见为实，看看不同细胞的mRNA的分布情况
 ## 这里选择的是通过不同时间点取样的细胞来进行分组查看，把超过2个sd 的那些样本的临界值挑选出来，下一步过滤的时候使用。
 HSMM; str(HSMM)
-pData(HSMM)$Total_mRNAs <- Matrix::colSums(exprs(HSMM))
-HSMM <- HSMM[,pData(HSMM)$Total_mRNAs < 1e6]
+pData(HSMM)$Total_mRNAs <- Matrix::colSums(exprs(HSMM))   # 使用Matrix包中的colSums函数对稀疏矩阵纵向求和计算每个细胞表达的UMI个数
+HSMM <- HSMM[,pData(HSMM)$Total_mRNAs < 1e6]   # 超过一百万个UMI就认为可能是doublet的情况
+
+## log10转换为正态分布计算lower and upper bound
 upper_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) +    # 用来在后面的图上画线，设定比较高的阈值是防止出现双细胞或者多细胞的情况出现
                      2*sd(log10(pData(HSMM)$Total_mRNAs)))
 lower_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) -    # 用来在后面的图上画线
@@ -1068,7 +1103,8 @@ lower_bound <- 10^(mean(log10(pData(HSMM)$Total_mRNAs)) -    # 用来在后面�
 table(pData(HSMM)$Hours)
 qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
   geom_vline(xintercept = lower_bound) +
-  geom_vline(xintercept = upper_bound)
+  geom_vline(xintercept = upper_bound) +
+  theme_bw()
 
 
 ## 上面已经根据基因表达情况以及样本的总测序数据选择好了阈值，下面就可以可视化并且对比检验一下执行过滤与否的区别。我们滤去过多的mRNA是为了减少doublets
@@ -1076,22 +1112,27 @@ qplot(Total_mRNAs, data = pData(HSMM), color = Hours, geom = "density") +
 HSMM <- HSMM[,pData(HSMM)$Total_mRNAs > lower_bound & 
                pData(HSMM)$Total_mRNAs < upper_bound]                                 
 HSMM <- detectGenes(HSMM, min_expr = 0.1)  # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
-HSMM
+HSMM # 从271个sample变成了262个sample
 
 ## 执行过滤并可视化检查一下；我们将不满足要求的细胞过滤掉以后，对每个细胞的表达量进行log转换后，理论上应该服从正态分布。
 ## Log-transform each value in the expression matrix.
 L <- log(exprs(HSMM[expressed_genes,]))
+dim(L)
 ## Standardize each gene, so that they are all on the same scale, then melt the data with plyr so we can plot it easily
-melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))  # reshape2包中的melt函数，如果不特殊指明，rowname为Var1，列名合并为Var2，entry变为value
+dim(melted_dens_df) # 14224 * 262 = 3726688
+melted_dens_df[1:6,]
 ## Plot the distribution of the standardized gene expression values.
 qplot(value, geom="density", data=melted_dens_df) +  stat_function(fun = dnorm, size=0.5, color='red') + 
   xlab("Standardized log(FPKM)") +
-  ylab("Density")
+  ylab("Density") +
+  theme_bw()
 
 
 ########################################### Classifying cells by type  ###########################################
 
 #----------------------------------# 根据marker gene进行有监督的聚类方法 #----------------------------------#
+# 这一步是可做可不做的，但是为了不同方法间的比较，我们还是会做这一步。
 
 # 根据指定基因（marker gene）对单细胞转录组表达矩阵进行分类(Classify cells with known marker genes)，相当于一个有监督的分类
 # leverage your knowledge of key marker genes to quickly and easily classify your cells by type:
@@ -1345,6 +1386,8 @@ HSMM_myo <- estimateDispersions(HSMM_myo)
 ## 策略1：  Ordering based on genes that differ between clusters
 ### find all genes that are differentially expressed in response to the switch from growth medium to differentiation medium:
 ### 这是一种简单的处理方法，就是比较process最早和最晚的细胞的表达基因，作为这个基因集
+### 相比与策略3（后文单独讲述），缺少了2次降维确定cluster的步骤（其中包括使用rho和delta（默认值或自定义），当然确定cluster本身
+### 也可以作为细胞分群的一种方法，其实并没有多出来步骤。
 diff_test_res <- differentialGeneTest(HSMM_myo[expressed_genes,],     # 这一步比较费时
                                       fullModelFormulaStr="~Media")
 ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
@@ -1383,6 +1426,7 @@ plot_cell_trajectory(HSMM_myo, color_by = "State")
 
 ## "State" is just Monocle's term for the segment of the tree. The function below is handy for identifying the State which 
 ## contains most of the cells from time zero. 
+## 注意在pData中State这个变量存储的是pseudotime树形结构的的segment的号码
 GM_state <- function(cds){
   if (length(unique(pData(cds)$State)) > 1){
     T0_counts <- table(pData(cds)$State, pData(cds)$Hours)[,"0"]
@@ -1429,9 +1473,9 @@ plot_genes_in_pseudotime(cds_subset, color_by = "Hours")
 
 ##### Alternative choices for ordering genes (策略3) -- for STEP 3 --Ordering based on genes that differ between clusters
 
-## Recommended
+## Recommended：所有经过过滤的gene中，进行数据降维（PCA+tSNE）-> 确认cluster合理 -> 筛选差异基因 -> 重新降维 -> 把细胞投射到pseudotime上面
 ## Ordering based on genes that differ between clusters(筛选gene用于order cell，我们选用dpFeature)
-## dpFeature的第一步是选择那些至少在5%的细胞当中有表达的gene
+## dpFeature的第一步是选择那些至少在5%的细胞当中有表达的gene，所谓dpFeature指的是delta和rho
 HSMM_myo <- detectGenes(HSMM_myo, min_expr = 0.1) # a gene is “expressed” if there is at least one count since we set min_expr = 0.1
 fData(HSMM_myo)$use_for_ordering <-
   fData(HSMM_myo)$num_cells_expressed > 0.05 * ncol(HSMM_myo)  # 这个5%好像有点太小了
@@ -1452,6 +1496,11 @@ HSMM_myo <- reduceDimension(HSMM_myo,
 ## 使用density peak clustering来发现二维空间中的tSNE，这个density peak算法是基于每个细胞周围的密度p和到距离较远的细胞的最短距离delta来决定的
 ## (不就是tSNE的算法核心么)，我们需要设定p和delta的阈值，来定义哪些细胞处在比较高的密度以内和距离范围以外。默认的clusterCell选择95%的p和
 ## delta来定义阈值。我们还可以定义cluster的数量。默认参数往往就挺好使的了。
+## We can set a threshold for the Ρ, Δ and define any cell with a higher local density and distance than the thresholds as the density peaks. 
+## Those peaks are then used to define the clusters for all cells. By default, clusterCells choose 95% of Ρ and Δ to define the thresholds. 
+## We can also set a number of clusters (n) we want to cluster. In this setting, we will find the top n cells with high Δ with Δ among the top 
+## 50% range. The default setting often gives good clustering. 这一步是dpFeature方法筛选ordering gene来进行pseudotime分析的精髓；我们可以在clusterCells
+## 函数中定义delta和rho，也可以定义cluster的数目。
 HSMM_myo <- clusterCells(HSMM_myo, verbose = F)
 
 ### clutering结束后，看看结果
@@ -1461,7 +1510,8 @@ plot_cell_clusters(HSMM_myo, color_by = 'as.factor(Hours)')
 ### decision plot，选择最佳p和delta
 plot_rho_delta(HSMM_myo, rho_threshold = 2, delta_threshold = 4 )
 
-### 然后我们可以重新计算clustering，使用优化后的p和delta两个参数，使用(skip_rho_sigma = T) 跳过计算 Ρ, Σ的步骤
+### 然后我们可以重新计算clustering，可以传入rho和delta两个参数，使用(skip_rho_sigma = T) 跳过计算 Ρ, Σ的步骤
+### 当然这一步可以不做，因为默认参数就已经比较不错了。
 HSMM_myo <- clusterCells(HSMM_myo,
                          rho_threshold = 2,
                          delta_threshold = 4,
@@ -1485,6 +1535,8 @@ HSMM_ordering_genes <-
 HSMM_myo <-
   setOrderingFilter(HSMM_myo,
                     ordering_genes = HSMM_ordering_genes)
+
+plot_ordering_genes(HSMM_myo)
 
 HSMM_myo <-
   reduceDimension(HSMM_myo, method = 'DDRTree')
@@ -1564,9 +1616,15 @@ plot_genes_branched_pseudotime(cds_subset,
                                ncol = 1)
 
 ########################################### 直接做差异分析 ###########################################
+
+#------------------------# Basic Differential Analysis #------------------------#
+
+# 差异基因表达是用于不同组间细胞的统计学有显著性的差异基因，这种比较需要大家能够把细胞分成若干个group，这个group的信息
+# 会在CDS对象的pData中有记录。
 # 前面的聚类分析和Pseudotime分析都需要取基因子集，就已经利用过差异分析方法来挑选那些有着显著表达差异的基因。
-# 如果对所有的基因来检验，非常耗时。
-marker_genes <- row.names(subset(fData(HSMM_myo), 
+# 如果对所有的基因来检验，非常耗时。对于一个上万个细胞，数百个细胞的数据集，在单个CPU的情况下，分析差异基因往往要耗费数小时
+# 的时间，因此我们倾向于挑选一个感兴趣的基因子集来分析。
+marker_genes <- row.names(subset(fData(HSMM_myo),     # 我们挑选了一些和myogenesis有关的gene，在后续的差异基因表达中大部分的统计结果是显著的
                                  gene_short_name %in% c("MEF2C", "MEF2D", "MYF5", 
                                                         "ANPEP", "PDGFRA","MYOG", 
                                                         "TPM1",  "TPM2",  "MYH2", 
@@ -1574,48 +1632,78 @@ marker_genes <- row.names(subset(fData(HSMM_myo),
                                                         "TNNT2", "TNNC1", "CDK1", 
                                                         "CDK2",  "CCNB1", "CCNB2", 
                                                         "CCND1", "CCNA1", "ID1")))
+# 这个数据集的研究背景是：
+# 在grouth medium(GM)生长的细胞会抑制细胞的分化，在harvest以后，一部分细胞会转移到differentiation medium(DM)来促进细胞的分化
+# 我们就来比较一下有哪些基因的表达会因为更换培养基而出现差异。
 
 diff_test_res <- differentialGeneTest(HSMM_myo[marker_genes,], 
                                       fullModelFormulaStr="~Media")
+
 # Select genes that are significant at an FDR < 10%
 sig_genes <- subset(diff_test_res, qval < 0.1)
 sig_genes[,c("gene_short_name", "pval", "qval")]
 
-###  还可以挑选其中几个基因来可视化看看它们是如何在不同组差异表达的。这个画图函数自己都可以写。
-
+### 还可以挑选其中几个基因来可视化看看它们是如何在不同组差异表达的。这个画图函数自己都可以写。
+### Monocle提供了绘制jitter plot的方法，来观察少量基因在不同条件下的表达情况。
 MYOG_ID1 <- HSMM_myo[row.names(subset(fData(HSMM_myo), 
                                       gene_short_name %in% c("MYOG", "CCNB2"))),]
-plot_genes_jitter(MYOG_ID1, grouping="Media", ncol=2)
+plot_genes_jitter(MYOG_ID1, grouping="Media", ncol=2) # 通过设置参数来修改每次显示的基因数
 
+### 我们希望通过差异基因表达，分析：
+### 1，不同条件下差异表达的gene
+### 2，随着pseudotime的变化而发生变化的差异基因
+### 3，如何使用multi-factorial differential analysis来去除confounding factors对结果的影响。
+
+#------------------------# Finding Genes that Distinguish Cell Type or State #------------------------#
+### 在动态的变化，比如发育过程中，细胞会逐渐出现distinct的中间态和终末态，我们在这边测试另外一系列基因
 ### 这样就可以测试某些基因，是否能区分细胞群体的不同类型及状态
-
 to_be_tested <- row.names(subset(fData(HSMM), 
                                  gene_short_name %in% c("UBC", "NCAM1", "ANPEP"))) 
 cds_subset <- HSMM[to_be_tested,]
 
+### 我们使用differentialGeneTest()函数对选出的gene，根据CellType进行分析。
 diff_test_res <- differentialGeneTest(cds_subset, fullModelFormulaStr="~CellType")
 diff_test_res[,c("gene_short_name", "pval", "qval")] 
+### 我们发现出了housekeeping gene TBP以外，其它gene都表现为差异表达模式，但是我们并不知道哪些基因在特定的CellType中高表达
+### 因此使用jitter plot来眼见为实一下。
 plot_genes_jitter(cds_subset, grouping="CellType", color_by="CellType", 
                   nrow=1, ncol=NULL, plot_trend=TRUE)
+### 当然我们也可以仅仅计算统计量，例如不同CellType，gene表达的平均值和中位数，我们也可以以Hour来找随着时间变化的gene，
+### 或者以Media为变量寻找更换serum前后的差异基因，总之在pData里面的变量都可以进行比较。包括那些后期经过计算追加到pData
+### 中的变量。
 
-
+### 这边是比较full model和reduced model，差别越大说明full model越优越。
 full_model_fits <- fitModel(cds_subset, modelFormulaStr="~CellType")
 reduced_model_fits <- fitModel(cds_subset, modelFormulaStr="~1")
 diff_test_res <- compareModels(full_model_fits, reduced_model_fits)
 diff_test_res
 
+#------------------------# Finding Genes that Change as a Function of Pseudotime #------------------------#
+# pseudotime根据细胞的表达变化，绘制出一个动态的细胞变化过程，当然我们也可以追踪在这个过程中，感兴趣的gene的表达变化。
+# 我们选取几个基因出来
 to_be_tested <- row.names(subset(fData(HSMM),
                                  gene_short_name %in% c("MYH3", "MEF2C", "CCNB2", "TNNT1")))
 cds_subset <- HSMM_myo[to_be_tested,]
 
+# 然后就是fit the model，在Monocle中，每个细胞都赋予了一个pseudotime value，这个模型即使计算gene的随着这个pseudotime变化
+# 的过程。Monocle使用VGAM包来模拟出一个gene expression随着pseudotime的表达变化的平滑的非线性函数。
 diff_test_res <- differentialGeneTest(cds_subset,
                                       fullModelFormulaStr = "~sm.ns(Pseudotime)")
+### 我们不难发现，其差别在于使用了sm.ns函数，它是告诉Monocle来fit a natural spline through the expression values to help
+### it describe the changes in expression as a function of progress.
 
+# 同样我们加入gene annotation来具体看看哪些gene的差异表达是显著性的。
 diff_test_res[,c("gene_short_name", "pval", "qval")]
 
+# 我们可以使用plot_genes_in_pseudotime函数来查看根据pseudotime
 plot_genes_in_pseudotime(cds_subset, color_by="Hours")
 
 
+#------------------------# Clustering Genes by Pseudotemporal Expression Pattern #------------------------#
+# 当我们研究时间序列数据的时候，我们时常会疑惑，即哪些gene会follow similar kinetic trends；Monocle提供了可视化方法，能够
+# 观察pseudotime-dependent genes。其中plot_pseudotime_heatmap()函数需要输入一个CDS对象（通常只包括一部分significant genes）
+# 从而生成光滑的表达曲线，非常类似于plot_genes_in_pseudotime()函数，然后可以将这些gene进行聚类并且以heatmap的形式展示。
+# 这种方法可以使用户观察到那些随着pseudotime co-vary的gene modules。
 diff_test_res <- differentialGeneTest(HSMM_myo[marker_genes,],
                                       fullModelFormulaStr = "~sm.ns(Pseudotime)")
 sig_gene_names <- row.names(subset(diff_test_res, qval < 0.1))
@@ -1624,6 +1712,12 @@ plot_pseudotime_heatmap(HSMM_myo[sig_gene_names,],
                         cores = 1,
                         show_rownames = T)
 
+
+#------------------------# Multi-Factorial Differential Expression Analysis #------------------------#
+# Monocle在进行差异基因表达的时候，可以同时考虑多个因子并且排除这些因子造成的影响。在下面的例子中，Monocle探究了几个gene
+# 的在myoblasts和fibroblastes的差异基因表达情况，同时排除了来自Hours这个变量的影响（这个变量存储了细胞收集的是哪一天这个
+# 信息。我们需要同时使用full model和reduced model，其中full model能够展现来自CellType和Hours的来个变量带来的差异，而reduced
+# model则只能展现来自Hours这个变量的信息。我们会使用jitter plot来展示每个gene的表达情况，分面则可以赋予不同的gene不同的y轴。
 to_be_tested <-
   row.names(subset(fData(HSMM),
                    gene_short_name %in% c("TPM1", "MYH3", "CCNB2", "GAPDH")))
@@ -1639,27 +1733,57 @@ plot_genes_jitter(cds_subset,
   facet_wrap( ~ feature_label, scales= "free_y")
 
 ############################### Analyzing Branches in Single-Cell Trajectories ###############################
+# 通常情况下单细胞的trajectory会出现分支的情况，分支是因为细胞产生了不同的基因表达情况（编程）；或者在发育过程中，细胞经历了
+# 命运决定，一个lineage会朝着一个path的方向，而另一个lineage会朝着另一个path组走。Monocle可以发现这些path的分支事件。
+# 我们这边使用Stephen Quake实验室的结果，他们采集了发育期小鼠的肺部细胞，这些细胞最后会分化为两种肺泡上皮细胞AT1和AT2。
+# Monocle可以重构这个事件并展现为带有分支的trajectory，使大家能够分析出细胞发生命运决定的关键时间点。在下面这张图中有
+# 一个single branch，标记为1。gene在这个branch中发生变化，不同的branches的差异基因有哪些？Monocle提供了一个称之为
+# BEAM的的特殊统计学方法，其全称为branched expression analysis modeling
+
 lung <- load_lung()
 plot_cell_trajectory(lung, color_by = "Time")
 
+
+# BEAM的输入对象是一个经过orderCells排序过的CDS，同时也需要提供branch point的名字。BEAM会返回一个significance scores table。
+# 被赋予比较高significant score的gene称之为branched-dependent。
 BEAM_res <- BEAM(lung, branch_point = 1, cores = 1)
 BEAM_res <- BEAM_res[order(BEAM_res$qval),]
+BEAM_res[1:6,]
 BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
 
+# 我们可以通过heatmap可视化所有significantly branch dependent的gene的表达变化。这个heatmap可以同时展示不同lineage的变化；同样它
+# 需要你提供一个branch point。行为gene，列为pseudotime，pseudotime的起始位于中间。你从中间往右边和左边读，分别follow一个lineage
+# 所有的gene还经过层级聚类，因此follow相同lineage-dependent expression pattern的gene会聚类到一起。
 plot_genes_branched_heatmap(lung[row.names(subset(BEAM_res,
                                                   qval < 1e-4)),],
                             branch_point = 1,
                             num_clusters = 4,
-                            cores = 1,
+                            cores = 6,
                             use_gene_short_name = T,
                             show_rownames = T)
 
+# 我们可以图形化展示一部分gene，使用plot_genes_branched_pseudotime()函数，非常类似于plot_genes_in_pseudotime；但唯一的区别是
+# 这张图展现了两个kinetics trends，每条分别代表一个lineage，其中ccnd2是一个cell cycle gene，在两个branch都是下调的，并且在BEAM
+# test中并没有展现出显著性。pdpn和sftpb基因都是这个体系当中的cell fate marker。
 lung_genes <- row.names(subset(fData(lung),
                                gene_short_name %in% c("Ccnd2", "Sftpb", "Pdpn")))
 plot_genes_branched_pseudotime(lung[lung_genes,],
                                branch_point = 1,
                                color_by = "Time",
                                ncol = 1)
+# 使用plot_clusters函数能够返回一个ggplot2对象，showing the shapes of the expression patterns followed by the 100 genes we've picked out. 
+# The topographic lines highlight the distributions of the kinetic patterns relative to the overall trend lines, shown in red.
+
+plot_clusters(lung, clustering = clusters)
+?plot_clusters
+
+
+full_model_fits <- fitModel(HSMM_myo[sample(nrow(fData(HSMM_filtered)), 100),],  
+                            modelFormulaStr="~VGAM::bs(Pseudotime)")
+expression_curve_matrix <- responseMatrix(full_model_fits)
+clusters <- clusterGenes(expression_curve_matrix, k=4)
+plot_clusters(HSMM_filtered[ordering_genes,], clusters)
+
 #################################################### 算法 ####################################################
 # Monocole还提出了好几个算法：
 ## dpFeature: Selecting features from dense cell clusters
@@ -2345,12 +2469,16 @@ plot_grid(
 ## We also provided a multi-way heatmap and multi-way kinetic curves to visualize important marker genes over the differentiation process. 
 ## Some additional analyses are included, which are used for the tutorial on analyzing the Paul dataset.
 
+## Monocle比较特色的算法就是reversed graph embedding (RGE)，用来绘制细胞发育的轨迹；细胞发育过程中涉及到的命运决定有可能会产生两种及以上的分化发育
+## 方向，比如HSC就会发育成MEP系（红系）和GMP（巨噬细胞系）；然后GMP进一步分化为颗粒细胞系和单核细胞系；重构的发育轨迹可以从4个维度来进行学习，但是
+## 图形化展示的时候是二维的。通过发育的谱系，我们能够找到那些在每一个lineage里面呈现出bifurcation pattern的基因，涉及的算法是BEAM。如果能结合ChIP-seq
+## 的数据，则能够揭示从重要的调控因子到下游重要的调控因子，再到target的复杂调控机制。
 
 
 ################################### 第一步，设定全局参数，加载包 ###################################
 ## turn warnings off by executing 'options(warn = -1)'
 ## execute helper function to identify the root cell
-rm(list = ls()) # clear the environment 
+rm(list = ls()) # clear the environment，清空环境中的变量。 
 options(warn=-1) # turn off warning message globally 
 
 # helper function to set the root state correctly 
@@ -2370,13 +2498,16 @@ suppressMessages(library(netbiov))
 ## create a CDS
 ## convert the FPKM values to relative census counts (但是在进行下游分析的时候，一般会把FPKM转换成census counts)
 ## create another CDS storing the relative census counts
+## 四步走：读入FPKM矩阵->构建CDS对象->使用relative2abs函数将FPKM转换成census counts->再根据census counts构建新的CDS对象
 
 # reading the exprs data and create a cell dataset:
 ## 按照常规构建好exprs，pd(pData或者colData, 在这里是sample_sheet)和fd(fData或者rowData, 在这里是gene_ann)
 setwd('/Users/mijiarui/Nature_Biotechnology_Paper/simpleSingleCell/monocle2-rge-paper/Supplementary_scripts/Jupyter_notebooks')
 hta_exprs <- read.csv("./Olsson_RSEM_SingleCellRNASeq.csv",row.names=1)
+hta_exprs[1:6,1:6]
 sample_sheet <- data.frame(groups = str_split_fixed(colnames(hta_exprs), "\\.+", 3), row.names = colnames(hta_exprs))
-## 在这里正则表达式将列名根据"."号进行分割，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
+
+## 在这里正则表达式将列名根据"."号或".."号进行分割(经过转义)，新构建的sample_sheet的行名就是hta_exprs的列名，建议查看一下sample_sheet
 str_split_fixed(colnames(hta_exprs), "\\.+", 3)
 head(sample_sheet)
 tail(sample_sheet)
@@ -2389,26 +2520,30 @@ tpm_mat <- apply(tpm_mat, 2, function(x) x / sum(x) * 1e6)
 
 # 表达矩阵，样本注释和基因注释数据准备就绪，就可以构建CellDataSet(CDS)对象了，使用newCellDataSet函数，一开始构建的对象输入的是矫正后的数值
 URMM_all_std <- newCellDataSet(as.matrix(tpm_mat),phenoData = pd,featureData =fd,
-                               expressionFamily = tobit(),  # 没理解为什么用negbinomial.size()
+                               expressionFamily = negbinomial.size(),  # 没理解为什么用negbinomial.size()，我们先按照教程来，但是知道这边是一个疑点
                                lowerDetectionLimit=1)
 
 # set up the experimental type for each cell，建议在每部执行之前查看pData(URMM_all_std)所包含的内容，说白了，这边根据实验的设计
 # 追加了分组信息
-pData(URMM_all_std)
+pData(URMM_all_std)[1:6,]
 pData(URMM_all_std)[, 'Type'] <- as.character(pData(URMM_all_std)[, 'groups.1']) #WT cells
-pData(URMM_all_std)
+pData(URMM_all_std)[1:6,]
+
 pData(URMM_all_std)[453:593, 'Type'] <- paste(as.character(pData(URMM_all_std)[453:593, 'groups.1']), '_knockout', sep = '') #KO cells
-pData(URMM_all_std)
+pData(URMM_all_std)[453:593,]
+
 pData(URMM_all_std)[594:640, 'Type'] <- paste(pData(URMM_all_std)[594:640, 'groups.1'], 
                                               pData(URMM_all_std)[594:640, 'groups.2'], 'knockout', sep = '_') #double KO cells
+pData(URMM_all_std)[594:640,]
 table(pData(URMM_all_std)$Type)
 
+# run Census to get the transcript counts
 # 将FPKM/TPM这些矫正表达量转换成绝对数值RPC(mRNA per cell)是建议这么做的，采用的算法叫做census，建议将FPKM/TPM转换成RPC，这一步
 # 在构建CellDataSet之前完成
 # run Census to get the transcript counts；在得到FPKM/TPM矩阵后，使用relative2abs (Transform relative expression values into absolute transcript...)
 # if you have FPKM/TPM data, you can still use negative binomial if you first convert your relative expression values to 
 # transcript counts using relative2abs(). This often leads to much more accurate results than using tobit()
-URMM_all_abs_list <- relative2abs(URMM_all_std, t_estimate = estimate_t(URMM_all_std), return_all = T, method = 'num_genes') # convert to RPC
+URMM_all_abs_list <- relative2abs(URMM_all_std, t_estimate = estimate_t(URMM_all_std), return_all = T, method = 'num_genes') # convert to RPC/census matrix
 str(URMM_all_abs_list)
 URMM_all_abs <- newCellDataSet(as(URMM_all_abs_list$norm_cds, 'sparseMatrix'),               # 构建CDS, 表达矩阵是RPC
                                phenoData = new("AnnotatedDataFrame",data=pData(URMM_all_std)),
@@ -2435,6 +2570,7 @@ table(fData(URMM_all_abs)[,2]) # 当然，查看了一下这一列的内容，�
 # read data from figure 1b, data collected from the Nature website 
 fig1b <- read.csv("./fig1b.txt",row.names=1, sep = '\t')
 dim(fig1b)
+fig1b[1:6,1:6]
 
 # match up the column name in fig1b to the colnames in URMM_all_fig1b
 # note that you should not run this mutliple times
@@ -2512,6 +2648,9 @@ suppressMessages(URMM_all_fig1b <- estimateDispersions(URMM_all_fig1b))
 #1. set ordering genes for the fig1b，将这部分gene赋值给一个对象，后续的很多分析都是要基于这个对象的。
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = row.names(fig1b))
 plot_ordering_genes(URMM_all_fig1b)
+pData(URMM_all_fig1b)
+fData(URMM_all_fig1b)
+
 ## By selecting only the high loading PCs, we effectively only focus on the more interesting biological variations.
 URMM_pc_variance <- plot_pc_variance_explained(URMM_all_fig1b, return_all = T, norm_method = 'log') # 碎石图，通过肉眼看哪些PC比较重要
 URMM_pc_variance  # 碎石图，通过肉眼看哪些PC比较重要，从而达到降维和去噪的作用。
@@ -2520,7 +2659,8 @@ URMM_pc_variance  # 碎石图，通过肉眼看哪些PC比较重要，从而达�
 ## We will then run reduceDimension with t-SNE as the reduction method on those top PCs and project them further down to two dimensions.
 ## 在使用PCA去噪的基础之上，使用tSNE进一步降维，并投射到一个二维的空间当中
 set.seed(2017)
-URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, max_components=2, norm_method = 'log', reduction_method = 'tSNE', num_dim = 12,  verbose = F)
+URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, max_components=2, norm_method = 'log', 
+                                  reduction_method = 'tSNE', num_dim = 12,  verbose = F)
 
 #3. initial run of clusterCells
 ## Then we can run density peak clustering to identify the clusters on the 2-D t-SNE space. The densityPeak algorithm 
@@ -2530,7 +2670,9 @@ URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, max_components=2, norm_method 
 ## choose 95% of Ρ and Δ to define the thresholds. We can also set a number of clusters (n) we want to cluster. In this 
 ## setting, we will find the top n cells with high Δ with Δ among the top 50% range. The default setting often gives good 
 ## clustering. 根据之前的提示和要求，将细胞分成5个cluster
-URMM_all_fig1b <- clusterCells(URMM_all_fig1b, verbose = F, num_clusters = 5)
+## 这一步是dpFeature的精髓，我们只不过使用了默认参数罢了。
+URMM_all_fig1b <- clusterCells(URMM_all_fig1b, verbose = F, num_clusters = 6)  # num_clusters改成6更接近tutorial的结果
+pData(URMM_all_fig1b)$Cluster
 
 #4. check the clusters，图形化展示聚类结果
 options(repr.plot.width=4, repr.plot.height=3)
@@ -2547,16 +2689,15 @@ URMM_clustering_DEG_genes <- differentialGeneTest(URMM_all_fig1b, fullModelFormu
 URMM_clustering_DEG_genes
 
 # 然后我们取所有基因来作为trajectory的ordering genes. use all DEG gene from the clusters
-URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)]
 ## 下面几句代码有试验一下，选择前1000个为ordering gene
 URMM_ordering_genes <- row.names(URMM_clustering_DEG_genes)[order(URMM_clustering_DEG_genes$qval)][1:1000]
-
+## 这些ordering gene用于trajectory的构建
 
 
 ########################################## 第五步，在野生型细胞中重构发育的trajectory ##########################################
 # use the feature genes selected above to reconstruct the developmental trajectory
 URMM_all_fig1b <- setOrderingFilter(URMM_all_fig1b, ordering_genes = c(URMM_ordering_genes))
-URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, verbose = F, scaling = T, max_components = 4, 
+URMM_all_fig1b <- reduceDimension(URMM_all_fig1b, verbose = F, scaling = T, max_components = 4,    # maxIter和lambda的含义没有标注
                                   maxIter = 100, norm_method = 'log',  lambda = 20 * ncol(URMM_all_fig1b)) 
 URMM_all_fig1b <- orderCells(URMM_all_fig1b)
 options(repr.plot.width=3, repr.plot.height=3)
@@ -2573,8 +2714,8 @@ plot_cell_trajectory(URMM_all_fig1b, color_by = 'cluster', x = 1, y = 3) + facet
 pData(URMM_all_abs)[colnames(URMM_all_fig1b), 'paper_cluster'] <- as.character(pData(URMM_all_fig1b)[, 'cluster'])
 
 URMM_all_abs <- setOrderingFilter(URMM_all_abs, ordering_genes = URMM_ordering_genes)
-URMM_all_abs <- reduceDimension(URMM_all_abs, verbose = F, scaling = T, maxIter = 100, norm_method = 'log', max_components = 4, 
-                                param.gamma = 100, lambda = 14 * ncol(URMM_all_fig1b)) 
+URMM_all_abs <- reduceDimension(URMM_all_abs, verbose = F, scaling = T, maxIter = 100, norm_method = 'log', 
+                                max_components = 5, param.gamma = 100, lambda = 14 * ncol(URMM_all_fig1b))  # max_components = 5更接近tutorial的结果
 URMM_all_abs <- orderCells(URMM_all_abs)
 options(repr.plot.width=6, repr.plot.height=5)
 plot_cell_trajectory(URMM_all_abs, color_by = 'Type')
@@ -2601,7 +2742,7 @@ cluster_cols <- type_cols
 cluster_cols[10] <- "#0600FC"   # 不懂这一步是干嘛的
 names(cluster_cols) <- cluster_vec
 
-## 绘图：一步法，传入表达矩阵即可 (结果与tutorial不一样)
+## 绘图：一步法，传入表达矩阵即可 (结果与tutorial不一样，图正好是倒过来了)
 options(repr.plot.width=6, repr.plot.height=4)
 plot_complex_cell_trajectory(URMM_all_fig1b[, ], color_by = 'cluster', show_branch_points = T, cell_size = 0.5, cell_link_size = 0.3) + 
   facet_wrap(~Type, nrow = 1) + scale_size(range = c(0.2, 0.2)) +
@@ -2614,7 +2755,7 @@ plot_complex_cell_trajectory(URMM_all_abs[, ], color_by = 'paper_cluster', show_
 
 
 ########################################## 第八步，将树型图展示在二维空间中 ##########################################
-## 图所包含的内容是和上面一样的，只不过投射到一个二维的空间中(前两个dimension)
+## 图所包含的内容是和上面一样的，只不过投射到一个二维的空间中(前两个dimension)，与tutorial基本一致
 options(repr.plot.width=5, repr.plot.height=3)
 plot_cell_trajectory(URMM_all_fig1b[, ], color_by = 'cluster', show_branch_points = T, theta = 120, cell_size = 0.5, cell_link_size = 0.3) + facet_wrap(~Type, nrow = 1) + scale_size(range = c(0.2, 0.2)) +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) + scale_color_manual(values = cluster_cols, name = "cluster") +theme (legend.position="right", legend.title=element_blank()) +
