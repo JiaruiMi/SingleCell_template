@@ -938,6 +938,14 @@ head(HSMM_sample_sheet)
 # 长转录本测序建库方案得到的结果（比如SMART-SEQ2），我们应该如何处理；可能比较优化的方案是将transcript counts转换成RPKM/TPM，然后进行导入。这也是
 # 为什么Monocle的online tutorial重点讲解了RPKM/TPM的作为原始数据导入的情况。
 
+### 关于Smart-seq
+# SMART（Switching mechanism at 5’ end of the RNA transcript）是一个具有里程碑意义的重要技术。实际上，能够从单细胞生成全长cDNA的测序方案并不多，
+# Smart-seq就是其中之一。对于等位基因特异性表达或者剪接变体研究来说，覆盖整个转录组是一件非常重要的事情。
+# Fluidigm C1单细胞制备系统能够自动完成Smart-seq步骤。你只需要将制备好的细胞悬液加进去，仪器就会分离并裂解细胞，把mRNA逆转录为cDNA，再对cDNA进
+# 行扩增。扩增后的cDNA可以拿来测序，也可以进行qPCR检测。
+# 在Enard的比较研究中，Fluidigm C1系统的Smart-seq最为灵敏，成本也最高。这一系统使用的微流体芯片不能重复使用，不过这种芯片可以放到显微镜下观察，
+# 证实健康单细胞的存在。
+
 # 针对上述推荐层级，raw counts(UMI)在导入CellDataSet对象之前千万不要normalization或者把它变成FPKM/TPM的data(因为UMI raw counts是最优输入)。
 # 主要是读取表达矩阵和样本描述信息，这里介绍两种方式，一种是读取基于 subjunc+featureCounts 分析后的reads counts矩阵，
 # 一种是读取 tophat+cufflinks 得到的RPKM表达矩阵
@@ -1799,28 +1807,63 @@ plot_clusters(HSMM_filtered[ordering_genes,], clusters)
 # Monocle2的聚类算法是借鉴了Seurat。
 
 #------------------------# Theory Behind Monocle #------------------------#
-### 1， dpFeature: Selecting features from dense cell clusters
+### 1， dpFeature: Selecting features from dense cell clusters，找到用于Pseudotime分析的ordering genes。
 ### 传统的tSNE算法对于连续动态的过程，仅仅可以对于不同类型的细胞进行分群，但是不能够足以展示生物学的动态变化。能够识别出这些
 ### 反应细胞动态变化的gene对于描绘谱系的变化十分有价值。dpFeature的算法精神大致如下：1）首先排除那些在极少数比例细胞中表达的gene
 ### （默认值是5%，我想这样就可以把某些特征性太过于明显的gene过滤掉）；2）其次，dpFeature先进行PCA分析，从而找到解释数据变异度
-### 最大的那部分PC；3）第三步，利用这部分PC进行非线性降维，即tSNE；4）第四步，dpFeature采用一种最新开发的聚类算法：density peak，来对
-### 细胞投射到二维的tSNE图上并进行聚类：density peak算法计算每个细胞局部的密度（local density，rho）和到另一团密度较高的细胞群的聚类delta。
+### 最大的那部分PC；3）第三步，利用这部分PC进行非线性降维，即tSNE；4）第四步，dpFeature采用一种最新开发的聚类算法：density peak clustering，来对
+### 细胞投射到二维的tSNE图上并进行聚类：density peak算法计算每个细胞局部的密度（local density，rho）和到另一团密度较高的细胞群的聚类delta(会直接影响cluster的数目)。
 ### rho和delta的关系可以通过decision plot来选择定义peaks的阈值。一个坐落在高密度细胞群的细胞同时又与另一团高密度细胞群相远离，这个称为
 ### density peaks。这些density peaks是cluster的核心，其它任何一种细胞都与与其最近的density peak 细胞相关。最后我们通过利用比较两个GLM
 ### 模型，一个是知道每个细胞会assign到哪个细胞群，另一个模型不知道，通过likelihood ratio test来找到不同细胞群的基因。5）最后我们默认选择
 ### 前1000个差异表达gene作为ordering gene来进行trajectory的构建。
 
-### 2，Reversed graph embedding
+### 2，Reversed graph embedding：通过reverse graph embedding来捕捉潜在图结构的局部信息。即通过学习来同时得到数据中主要的points和图的结构。
+### 这边提到了一个概念，叫manifold learning：流形学习（manifold learning）是机器学习、模式识别中的一种方法，在维数约简方面具有广泛的应用。
+### 它的主要思想是将高维的数据映射到低维，使该低维的数据能够反映原高维数据的某些本质结构特征。流形学习的前提是有一种假设，即某些高维数据，
+### 实际是一种低维的流形结构嵌入在高维空间中。流形学习的目的是将其映射回低维空间中，揭示其本质。通过流形学习来实现降维的方法有很多，其基
+### 本思想也类似：假设数据在高维具有某种结构特征，希望降到低维后，仍能保持该结构。比较常见的有：
+### 1）. 局部改线嵌入（Local Linear Embedding, LLE）：假设数据中每个点可以由其近邻的几个点重构出来。降到低维，使样本仍能保持原来的重构关系，且重构系数也一样。
+### 2）. 拉普拉斯特征映射（Laplacian Eigenmaps, LE：将数据映射到低维，且保持点之间的（相似度）距离关系。即在原空间中相距较远的点，投影到低维空间中，希望它们之间仍相距较远。反之亦然。
+### 3）. 局部保持投影（LPP）
+### 4）. 等距映射（Isomap）
+### 作者在这边简单举了一个例子来理解高维空间向低维空间的转变：比如单细胞测序，根据基因这个特征我们有20000维的数据，但是实际上在某一个方面
+### 细胞可能可以分配在一个curve上/附近，比如处于不同细胞周期的细胞就处在细胞周期这样一个环形结构当中（恰当的筛选gene很重要啊）。
+### 作者提到数据降维是manifold learning的第一步，但是传统的降维方法在捕获数据内在的结构方面能力有限。所以Monocle2使用了一个称之为reversed graph embedding
+### 的方法来学习manifold的structure。所以其步骤是：1、降维；2、从数据中找到产生数据的一个清晰的，平滑的manifold；3、将细胞对应到这个manifold的对应位置上
+### 针对这个graph的构建，MAO提出了两种策略，一个叫DRTree，另一个是DDRTree
 
 ### 3，DRTree: Dimensionality Reduction via Learning a Tree
+### 这是一个undirected tree，每一个node都是一个input data point，问题就变成了找到最小生成树(minimal spanning tree)：最小生成树
+### 是指连通无向带权图的一个子图，要求能够连接图中的所有顶点、无环、路径的权重和为所有路径中最小的。可以使用Kruskal‘s Algorithm
+### 来实现，起策略是，每一步都挑选当前看来最轻的边，如果这条边的两个端点的加入，没有在最小生成树中造成回路，就将这条边加入最小生成树
+### 然后对所有的边重复上一步，这个算法的关键一步操作是判断是否形成回路。虽然实现起来比较简单，但是对于大的input data，这个graph就会
+### 非常复杂，并且出现scalability problems。
 
 ### 4，DDRTree: discriminative dimensionality reduction via learning a tree
+### 这个方法的产生，是为了解决DRTree中无法处理large complex input dataset的。为了避免复杂的计算和内存的溢出，这个方法是基于一个小的数据点集
+### 来构画graph，我们可以根据ncenter参数来认为定义points的数量，其实有点类似于k-means，也就是把一小群点当成一个对象，如果一共有K个对象，然后
+### 根据K个对象来学习生成graph。DDRTree能够学习得到核心manifold，计算pseudotime coordinate和branch assignments。在后续的BEAM中也用到了
+### 这个方法。
 
 ### 5，Census
 
 ### 6，BEAM：Branched expression analysis modeling
+### Monocle2赋予每一个细胞一个pseudotime数值，同时“State”编码了segment of the trajectory。BEAM算法是为了探究branch-dependent的基因表达的，其采取
+### 的策略是比较两个负二项分布的GLM模型。其中NULL model假设被tested的gene不是一个branch specific gene，而alternative model则假设这个gene是branch
+### dependent的。每一个model包括了一个natural spline（自由度是3），描绘了平均表达量和pseudotime的函数关系。其中NULL model仅仅fit一个curve，而
+### alternative model则会对每一个branch都fit一个curve。Monocle2整合了VGAM “smart” spline fitting函数，因此我们使用了来自SPLINE包中的sm.ns()函数
+### 一个branch-dependent gene意味着这个gene的表达动态模式在每一个branch都是独特的，即curve是平滑的，有不同的shape。为了fit full model，细胞会安排在
+### 一个合适的branch。在trajectory构建的时候会生成State属性来反映。比如Truetlein的数据集中构建的trajectory有两个branch，分别是对应于肺泡1型细胞和2型
+### 细胞两个lineage的LAT1和LAT2，和三个states，分别是有SBP，SAT1，SAT2的progenitor和AT1细胞以及AT2细胞。用户通过提供SAT1和SAT2来比较LAT1和LAT2，同样
+### 用户可以定义一个branch point，这个branch point可以产生两个states。然后Monocle把细胞分配到SAT1和SAT2两个state，分别构建LAT1和LAT2两个lineage。SBP必须
+### 在两个lineage中都出现，因为它在树根的位置。为了让数据更加稳定，算法会把progenitor cell分成两个group，每个branch对应一个group。但是我们会把第一个
+### progenitor cell分给两个group来确保它们从同一个时间点开始。
 
-### 7，Branch time point detection
+### 7，Branch time point detection：
+### 这个算法是来发现某个基因在命运决定关键时期，开始在不同的lineage出现表达的差异。这个算法是从pseudotime的一个终末段开始来计算这个gene在两个cell fate的表达差别
+### 然后算法回溯找到最近的intersection point between two fitted spline curves，正好对应于gene开始在两个branch出现分叉的情况。为了增加flexibility，算法会再正溯
+### 找到一个时间点，这个时间点表征了这个gene在两个lineage diverge超过了特定的阈值，然后将这个时间点定义为这个gene的branch time point。
 
 
 # Monocole还提出了好几个算法：
@@ -2132,9 +2175,10 @@ my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id) # 这一步�
 fData(my_cds)
 plot_ordering_genes(my_cds)   # plot_ordering_genes默认将细胞以empirical dispersion为纵轴，mean expression为横轴绘制散点图；用于后续cluster的gene黑色高亮
 
-### 为了和Dave的结果一致，我们还是仅仅根据mean_expression来进行细胞的筛选。
+### 为了和Dave的结果一致，我们还是仅仅根据mean_expression来进行细胞的筛选，一共有4012个细胞。
 unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
 my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id)
+dim(unsup_clustering_genes)
 plot_ordering_genes(my_cds)
 
 ## It will take a lot of computational time to cluster 8,381 cells even when we have subsetted the total number of genes down to 4,012. 
@@ -2143,18 +2187,20 @@ plot_ordering_genes(my_cds)
 ## explained by each component based on a PCA performed on the normalised expression data. From the plot we can decide the number of 
 ## components to use in our downstream analyses.
 ## 目前单细胞测序的数据降维默认采用PCA+tSNE的方法
-plot_pc_variance_explained(my_cds, return_all = FALSE)   # 如函数名，这个函数绘制碎石图，方便用户选择PC的个数用于后续聚类
+plot_pc_variance_explained(my_cds, return_all = T)   # 如函数名，这个函数绘制碎石图，方便用户选择PC的个数用于后续聚类
 ### 这一步比较耗时，The goal is to identify the elbow in this plot, which can be a bit subjective.
+### return_all = T会返回每个PC可以解释的variance的比例，函数默认返回前100个PC的结果。
 
 
 ## 开始进行聚类，使用clusterCells()函数
 ## The clusterCells() function performs the clustering on a CellDataSet; however, you need to input the number of requested clusters. 
 ## 我们先看看使用5个PC的结果；如果num_dim没有事先指定，默认值是50个PC。在这里我们只选择前5的PC进行降维去噪。
-my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 5,         # 这一步比较耗时
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 4,         # 这一步比较耗时
                           reduction_method = 'tSNE', verbose = TRUE) # 我们在进程中可以看到remove noise by PCA和reduce dimension by tSNE
 
 # perform unsupervised clustering requesting 15-1 clusters，我们最高选取15个cluster，计算机会从1-15进行计算，找到当中cluster数最合理的
 my_cds <- clusterCells(my_cds, num_clusters = 15) # 这一步的结果与Dave的结果略有出入：4.797959
+## 如果将上面的num_dim调整为4，这里的num_clusters仍然保持为15，得到的结果为4.711549，是经过参数调整后最接近Dave的结果。
 
 # cluster information is in the Cluster column，Cluster信息存储在pData当中，一共有14个cluster
 head(pData(my_cds)); pData(my_cds)$Cluster
@@ -2168,7 +2214,7 @@ plot_cell_clusters(my_cds)
 ## 我们再看看使用10个PC的结果
 my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 10,
                           reduction_method = 'tSNE', verbose = TRUE)
-my_cds <- clusterCells(my_cds, num_clusters = 15)  # 结果还是和Dave的略有差别的，好在还是分出了14群细胞
+my_cds <- clusterCells(my_cds, num_clusters = 15)  # 结果还是和Dave的略有差别的(每次的结果会不一样)，好在还是分出了14群细胞
 table(pData(my_cds)$Cluster)
 my_cluster_dim_10 <- pData(my_cds)$Cluster
 plot_cell_clusters(my_cds)
@@ -2191,7 +2237,7 @@ adjustedRand(as.numeric(my_cluster_dim_5), as.numeric(my_cluster_dim_10))
 # One of the main interests of single cell transcriptomics is the identification of novel markers for cell types. We can use 
 # differentialGeneTest(), which is quite a flexible function, to find marker genes by assessing each gene’s expression level across the 
 # cells. The model formulae used in the function can use any column in the phenoData table, including columns that we manually add.
-# 使用differentialGeneTest()这个函数。marker gene的筛选可以针对任何pData当中的column，类似于time，medium或者很多其它自己加入的属性  。
+# 使用differentialGeneTest()这个函数来筛选marker genes。marker gene的筛选可以针对任何pData当中的column，类似于time，medium或者很多其它自己加入的属性  。
 
 # I’ll create a vector that indicates whether a single was clustered in “Cluster 1” or not to identify genes differentially expressed in 
 # cluster 1 versus the other clusters. Dave在这边将cluster1的细胞都标记出来，其余都是非cluster1，然后计算cluster1和非cluster1的差异基因
@@ -2200,8 +2246,8 @@ adjustedRand(as.numeric(my_cluster_dim_5), as.numeric(my_cluster_dim_10))
 my_vector <- rep('no', nrow(pData(my_cds)))
 
 # change status to yes if the cell was in cluster 1
-table(pData(my_cds)$Cluster) # 我们看到一共有14个cluster, 其中cluster1的有1135个
-my_vector[pData(my_cds)$Cluster == 1] <- rep('yes', sum(pData(my_cds)$Cluster == 1))
+table(pData(my_cds)$Cluster) # 我们看到一共有14个cluster(cluster是从1开始的，这与Seurat不同), 其中cluster1的有1211个
+my_vector[pData(my_cds)$Cluster == 1] <- 'yes'
 table(my_vector)  # 这样就将对应cluster==1的细胞的数值由默认的no改成了yes
 
 # add vector to phenoData，放入test这一列
@@ -2211,7 +2257,7 @@ head(pData(my_cds))
 # I’ll perform the differential expression analysis on the subset of genes where the mean expression (across cells) was >= 0.1
 length(unsup_clustering_genes$gene_id)  # 之前挑选出来用于cluster的gene(平均表达量大于0.1），共4012个，的dispersion， mean expression信息
 de_cluster_one <- differentialGeneTest(my_cds[unsup_clustering_genes$gene_id,],
-                                      fullModelFormulaStr = '~test',     # 这个formular提示哪两组进行比较
+                                      fullModelFormulaStr = '~test',     # 这个formular提示哪两组进行比较(在这里是cluster1 vs non-cluster1)
                                       cores = 8)
 dim(de_cluster_one) # 得到一个矩阵，增加了pval和qval两列
 de_cluster_one
@@ -2224,15 +2270,16 @@ de_cluster_one %>% arrange(qval) %>% head()  # dplyr包中的arrange函数，对
 # 注意Dave的测试自己有一点问题，返回结果不是4012个gene，所以他的结果中最significant的是ENSG00000163131
 plot_genes_jitter(my_cds['ENSG00000163131',], grouping = "Cluster") # 根据cluster来看jitterplot的结果
 ## CTSS is specific for cluster 1 but also for clusters 4 and 6. We count data hence the expression is on a discrete scale.
+## 注意，每次的结果不一样，之前可能要设置一个伪随机数。
 ## 在我的数据集中CTSS高表达于3，5，8三个cluster，而非cluster1，但是为了后续分析的一致性，我们先使用这个gene
 
-# We can use plot_cell_clusters() to highlight clusters 1, 4, and 6. （相应的修改成3，5，8）
+# We can use plot_cell_clusters() to highlight clusters 1, 4, and 6. （根据这个基因高表达的cluster number，相应的修改cluster的名字）
 # add another column to the phenotypic data
 # where TRUE means cluster membership in clusters 1, 4, or 6 （相应的修改成3，5，8）
-pData(my_cds)$my_colour <- pData(my_cds)$Cluster == 3 | pData(my_cds)$Cluster == 5 | pData(my_cds)$Cluster == 8 # 增加my_colour一列
+pData(my_cds)$my_colour <- pData(my_cds)$Cluster == 4 | pData(my_cds)$Cluster == 5 | pData(my_cds)$Cluster == 13 # 增加my_colour一列
 table(pData(my_cds)$my_colour)
 plot_cell_clusters(my_cds, color_by = 'my_colour')  # CTSS is overexpressed in clusters 3, 5, and 8, which are highlighted in turquoise.
-## 这个结果和Dave的还是比较一致的。
+## 这个结果和Dave的还是比较一致的，最起码highlight的cluster是聚在一堆的。
 
 ############################################### Constructing Single Cell Trajectories ###############################################
 # The “unit” used for the trajectory is pseudotime; a cell at the beginning of the trajectory, i.e. starting state, will have a lower 
@@ -2243,9 +2290,13 @@ plot_cell_clusters(my_cds, color_by = 'my_colour')  # CTSS is overexpressed in c
 # STEP2: Reduce the dimensionality of the data
 # STEP3: Order cells in pseudotime
 
+# trajectory的单位是pseudotime，一个细胞为于trajectory的起始位置，其pseudotime的数值会比终末细胞的pseudotime数值小
+
 # For the trajectory analysis in this post, I will use only a subset of all cells (cluster 1, 4, and 6) and genes that are expressed in 
 # at least 10 cells. 为了方便计算，Dave只筛选了在cluster1,4,6中的细胞，并且只纳入在大于等于10个细胞以上有表达的基因进行分析。当然在我的这个
-# 数据里面就是3，5，8三个cluster，上面已经给出了。也就是说我们只分析这三个cluster当中细胞的pseudotime
+# 数据里面就是你得到的根据CTSS基因高表达的cluster，一共有三个cluster，上面已经给出了。也就是说我们只分析这三个cluster当中细胞的pseudotime
+
+# Dave在这边使用的是dpFeature的方法，也是Monocle推荐使用的方法。
 expressed_genes <- row.names(subset(fData(my_cds), num_cells_expressed >= 10))
 
 # my_colour is TRUE if a cell belongs to either cluster 1, 4, or 6 （对应修改成3，5，8）
@@ -2275,16 +2326,17 @@ my_cds_subset <- reduceDimension(my_cds_subset,        # 耗时
                                  num_dim = 10,
                                  reduction_method = 'tSNE',
                                  verbose = TRUE)
-my_cds_subset <- clusterCells(my_cds_subset, verbose = FALSE)  # Dave的结果是3.551792
+my_cds_subset <- clusterCells(my_cds_subset, verbose = FALSE)  # Dave的结果是3.551792，每次的结果输出是不一样的
 plot_rho_delta(my_cds_subset, rho_threshold = 2, delta_threshold = 10)   # Scatter plot of rho versus delta.
+## plot_rho_delta函数的rho_threshold和delta_threshold默认参数是NULL
 
 # We’ll use rho = 2 and delta = 10 to cluster the cells again.
 my_cds_subset <- clusterCells(my_cds_subset,
                               rho_threshold = 2,
-                              delta_threshold = 10,
+                              delta_threshold = 12,
                               skip_rho_sigma = T,     # 别再计算rho和delta了
                               verbose = FALSE)
-table(pData(my_cds_subset)$Cluster)    # Dave的结果是4个cluster
+table(pData(my_cds_subset)$Cluster)    # Dave的结果是4个cluster，delta_threshold参数越大，得到的cluster越少，我在这边调整为12，结果与Dave的接近
 plot_cell_clusters(my_cds_subset)
 
 # Now we’ll perform the differential gene expression analysis as before but across all cell clusters.
@@ -2300,7 +2352,7 @@ clustering_DEG_genes %>% arrange(qval) %>% head() # 我们还是根据qval升序
 ## clusters，我们用这些gene进行降维和trajectory的分析
 my_ordering_genes <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
 my_cds_subset <- setOrderingFilter(my_cds_subset, ordering_genes = my_ordering_genes)
-my_cds_subset <- reduceDimension(my_cds_subset, method = 'DDRTree')  # 耗时
+my_cds_subset <- reduceDimension(my_cds_subset, method = 'DDRTree')  # trajectory投射到二维，耗时
 
 # the warnings were for use of deprecated code
 my_cds_subset <- orderCells(my_cds_subset)  # 使用orderCells函数，在pData中增加了Pseudotime一项？
@@ -2315,16 +2367,16 @@ plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
 # pseudotime is now a column in the phenotypic data as well as the cell state
 head(pData(my_cds_subset))
 
-my_pseudotime_de <- differentialGeneTest(my_cds_subset,
+my_pseudotime_de <- differentialGeneTest(my_cds_subset,     # 这一步相当耗时
                                          fullModelFormulaStr = "~sm.ns(Pseudotime)",
                                          cores = 8)
 my_pseudotime_de %>% arrange(qval) %>% head()  # 显示pseudotime发现的差异基因，根据qval进行从小到大进行排序。
 
 
 # save the top 6 genes(因为我这边用了head函数); 尤其是为啥select函数无法正确在dplyr包中使用
-a <- my_pseudotime_de %>% arrange(qval) %>% head() 
-a[,'id'] -> my_pseudotime_gene
-plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])   # State在Dave的结果里是5个，重新check一下。
+my_pseudotime_de %>% arrange(qval) %>% head() %>% select(id) -> my_pseudotime_gene  # my_pseudotime_gene 是data.frame
+my_pseudotime_gene <- my_pseudotime_gene$id  # 转换成vector
+plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])   # State在Dave的结果里是5个，重新check一下。State的数量决定了branch point
 
 
 ################################### Clustering Genes by Pseudotemporal Expression Pattern ###################################
@@ -2332,25 +2384,25 @@ plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])   # State在Dave的
 # Monocle provides functionality for clustering genes according to their pseudotime value. The clustering analysis and plotting are 
 # done in one step using the plot_pseudotime_heatmap() function; to save the clustering results, use return_heatmap = TRUE.
 # cluster the top 50 genes that vary as a function of pseudotime
-b <- my_pseudotime_de %>% arrange(qval) %>% head(50)
-b[,'id']-> gene_to_cluster
+my_pseudotime_de %>% arrange(qval) %>% head(50) %>% select(id) -> gene_to_cluster
+gene_to_cluster <- gene_to_cluster$id
 
 my_pseudotime_cluster <- plot_pseudotime_heatmap(my_cds_subset[gene_to_cluster,],   # 结果和Dave的有点出入，HLA-B和HLA-C的位置
                                                  num_clusters = 3,   # 这边我们指定了number of cluster
                                                  cores = 8,
                                                  show_rownames = TRUE,
                                                  return_heatmap = TRUE)
-
+# heatmap的横轴是把pseudotime分成了100份
 # The columns of the heatmap are pseudotime values binned into 100 bins. Here’s the source code:
-newdata <- data.frame(Pseudotime = seq(min(pData(my_cds_subset)$Pseudotime), 
-                                       max(pData(my_cds_subset)$Pseudotime), length.out = 100))
+# newdata <- data.frame(Pseudotime = seq(min(pData(my_cds_subset)$Pseudotime), 
+#                                       max(pData(my_cds_subset)$Pseudotime), length.out = 100))
 # Since we saved the results in my_pseudotime_cluster, we can extract the genes for each cluster.
 # hierarchical clustering was used to cluster the genes
 # we can cut the dendrogram to form the same 3 clusters as plot_pseudotime_heatmap
 my_cluster <- cutree(my_pseudotime_cluster$tree_row, 3)
 my_cluster
 
-# genes in cluster 1, 这个结果和Dave的差不多
+# genes in cluster, 这个结果和Dave的差不多，但是上面的heatmap有差别
 my_pseudotime_de[names(my_cluster[my_cluster == 1]),"gene_short_name"]
 
 # genes in cluster 2
@@ -2365,11 +2417,15 @@ my_pseudotime_de[names(my_cluster[my_cluster == 3]),"gene_short_name"]
 # that have supposedly gone through different developmental paths. Monocle provides functions that allows you to identify the genes that 
 # differ at a particular branch point. Here is the trajectory again.
 plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
+plot_complex_cell_trajectory(my_cds_subset, color_by = "Cluster")
 
 # The BEAM() function takes a CellDataSet that has been ordered with orderCells() and a branch point in the trajectory. A table of genes 
 # is returned with significance values that indicate whether genes have expression patterns that are branch dependent.
 # warnings not shown
-BEAM_res <- BEAM(my_cds_subset, branch_point = 1, cores = 8)
+# BEAM的输入文件是经过orderCells()的输入文件，和你指定的感兴趣的branch point number。可能需要使用plot_complex_cell_trajectory来先直观看一下
+# BEAM的输出文件是一个表格，包含了一个significant value，来判断这个gene的表达模式是不是branch dependent。
+BEAM_res <- BEAM(my_cds_subset, branch_point = 1, cores = 8)  # 指定你感兴趣的branch_point
+head(BEAM_res)
 BEAM_res <- BEAM_res[order(BEAM_res$qval),]
 BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
 
@@ -2385,6 +2441,7 @@ my_branched_heatmap <- plot_genes_branched_heatmap(my_cds_subset[row.names(subse
                                                    use_gene_short_name = TRUE,
                                                    show_rownames = TRUE,
                                                    return_heatmap = TRUE)
+class(my_branched_heatmap) # 返回的结果是一个list
 ## The heatmap shows how some genes are over-expressed or under-expressed depending on the trajectory path.
 
 # We can return genes that belong to specific clusters that were identified by BEAM().
