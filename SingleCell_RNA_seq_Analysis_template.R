@@ -1785,6 +1785,44 @@ clusters <- clusterGenes(expression_curve_matrix, k=4)
 plot_clusters(HSMM_filtered[ordering_genes,], clusters)
 
 #################################################### 算法 ####################################################
+#------------------------# Major updates in Monocle2 #------------------------#
+# Monocle2主要采用了基于mRNA counts的模型和相关统计方法，借鉴了DESeq2中有关dispersion modeling和variance-stabilization的方法
+# 并应用在差异分析，数据降维等步骤当中。
+
+# Monocle2采用了一种非线性的重构算法，称为DDRTree；这种算法可以更加敏感的找到branches。DDRTree即使在不同数量细胞的计算过程中
+# 能发现相似的trajectories，鲁棒性更好。
+
+# Monocle2对于发现branches太好，以至于作者同时也使用了其他方法来解释这些结果。比如Branch expression analysis modeling，又叫
+# BEAM这个算法是比较新的，用来分析特定的branch point的方法。BEAM能够返回哪些branch-dependent genes，并且有相应的可视化方法可以
+# 检测这些gene。
+
+# Monocle2的聚类算法是借鉴了Seurat。
+
+#------------------------# Theory Behind Monocle #------------------------#
+### 1， dpFeature: Selecting features from dense cell clusters
+### 传统的tSNE算法对于连续动态的过程，仅仅可以对于不同类型的细胞进行分群，但是不能够足以展示生物学的动态变化。能够识别出这些
+### 反应细胞动态变化的gene对于描绘谱系的变化十分有价值。dpFeature的算法精神大致如下：1）首先排除那些在极少数比例细胞中表达的gene
+### （默认值是5%，我想这样就可以把某些特征性太过于明显的gene过滤掉）；2）其次，dpFeature先进行PCA分析，从而找到解释数据变异度
+### 最大的那部分PC；3）第三步，利用这部分PC进行非线性降维，即tSNE；4）第四步，dpFeature采用一种最新开发的聚类算法：density peak，来对
+### 细胞投射到二维的tSNE图上并进行聚类：density peak算法计算每个细胞局部的密度（local density，rho）和到另一团密度较高的细胞群的聚类delta。
+### rho和delta的关系可以通过decision plot来选择定义peaks的阈值。一个坐落在高密度细胞群的细胞同时又与另一团高密度细胞群相远离，这个称为
+### density peaks。这些density peaks是cluster的核心，其它任何一种细胞都与与其最近的density peak 细胞相关。最后我们通过利用比较两个GLM
+### 模型，一个是知道每个细胞会assign到哪个细胞群，另一个模型不知道，通过likelihood ratio test来找到不同细胞群的基因。5）最后我们默认选择
+### 前1000个差异表达gene作为ordering gene来进行trajectory的构建。
+
+### 2，Reversed graph embedding
+
+### 3，DRTree: Dimensionality Reduction via Learning a Tree
+
+### 4，DDRTree: discriminative dimensionality reduction via learning a tree
+
+### 5，Census
+
+### 6，BEAM：Branched expression analysis modeling
+
+### 7，Branch time point detection
+
+
 # Monocole还提出了好几个算法：
 ## dpFeature: Selecting features from dense cell clusters
 ## Reversed graph embedding
@@ -1965,6 +2003,7 @@ HSMM <- estimateDispersions(HSMM)
 ## reads per 8,381 cells. This dataset was processed with Cell Ranger 2.0.1 with the parameter –cells=10000.
 ## 我们看到使用10X Genomics，我们每个细胞得到的平均reads数是92000个。
 
+## Monocle在进行聚类，差异基因表达，发育轨迹的构建上，有多种方法可以实现，因此workflow会存在差异。
 
 ########################################### 读入数据，构建CellDataSet对象 ######################################
 
@@ -1972,21 +2011,27 @@ setwd('/Users/mijiarui/Monocle')
 library(monocle)
 library(cellrangerRkit)  # 我们使用cellrangerRkit包来将10X的下机后的单细胞数据读入R当中
 packageVersion("cellrangerRkit")
+packageVersion("monocle")
 
 # 注意，根据Dave Tang的博客，我们需要建立一个叫pbmc8k的文件夹，再建立一个叫outs的子文件夹，然后把tar的内容存放进去，这样load_cellranger_matrix
 # 才能读取
 my_dir <- "/Users/mijiarui/Monocle/pbmc8k"
-# load data
+dir(my_dir)
+# load data，cellrangerRkit包中的load_cellranger_matrix()函数用于将单细胞转录组数据加载进入R，但是这个函数需要读入的文件符合一定的文件层级结构，
+# 因此我们需要实现将filtered_gene_bc_matrices文件夹挪入新创建的outs文件夹当中，建议在终端查看一下文件的层级结构。
 gbm <- load_cellranger_matrix(my_dir)
-class(gbm)  # 这个对象类型，也是基于ExpressionSet来进行开发的，所以可以使用exprs(), pData()和fData()来读取对象中的内容  
+class(gbm)  # 这个对象类型(GeneBCMatrix)，也是基于ExpressionSet来进行开发的，所以可以使用exprs(), pData()和fData()来读取对象中的内容  
+typeof(gbm) # 是一个S4 class;同样是组学数据的S4 class，但是里面数据的读取是不同的，比如Seurat和Monocle
 
 # check out the expression data using exprs()
 # 33,694 genes across 8,381 single cells
 dim(exprs(gbm))
 exprs(gbm)[1:5, 1:5]   # 可以看出CellRanger的矩阵输出默认是稀疏矩阵sparse matrix; 我们这边的是UMI data，相当于counts数据，符合负二项分布
+## dgTMatrix是一种存储稀疏矩阵的方法。
 
 # check out the phenotypic data
 dim(pData(gbm))
+head(pData(gbm))
 
 # check out the feature information
 dim(fData(gbm))
@@ -1996,11 +2041,11 @@ head(fData(gbm))
 ## 正式构建CellDataSet对象，注意Monocle expects that the gene symbol column in the feature data is called gene_short_name 
 ## or else you will get a warning. 所以现对fData进行少许微调：
 
-# rename gene symbol column
+# rename gene symbol column，将symbol一列改写成gene_short_name一列，这样在后续构建对象的时候不会报错。
 my_feat <- fData(gbm)  # 我们把featureData存到另一个变量当中去，然后修改列名，确保gene symbol的列名是gene_short_name
 names(my_feat) <- c('id', 'gene_short_name')  # 如果不这么修改，在构建CellDataSet这个对象的时候，会有warning message
 
-# no warning
+# 使用newCellDataSet函数进行构建，no warning。注意在这边我们输入的是UMI data，所以统计学方法使用的是服从负二项分布的negbinomial.size
 my_cds <- newCellDataSet(exprs(gbm),
                          phenoData = new("AnnotatedDataFrame", data = pData(gbm)),
                          featureData = new("AnnotatedDataFrame", data = my_feat),   # featureData输入的是经过列名修改过的my_feat
@@ -2019,7 +2064,7 @@ my_cds <- estimateDispersions(my_cds)
 
 ## exploratory data analysis
 ### detectGenes()函数会帮助我们计算一个gene在多少个细胞中表达，和一个细胞表达多少个gene，分别添加到fData和pData当中去
-### 相当于一个很初步的统计
+### 相当于一个很初步的统计；作者在这边使用的tally一词，一个细胞表达了某个gene，无论是1个UMI还是10个UMI，我们都算作一个，tally的含义是记账
 my_cds <- detectGenes(my_cds, min_expr = 0.1) # 只要有1个counts就会被认作这个gene是表达的，因为我们这边设定的最小识别阈值是0.1
 head(fData(my_cds))  # num_cells_expressed列
 summary(fData(my_cds)$num_cells_expressed)
@@ -2038,7 +2083,7 @@ sum(exprs(my_cds['ENSG00000238009',]))
 ### it is still tallied as 1.
 head(pData(my_cds))
 # sanity check for AAACCTGAGCATCATC-1
-sum(exprs(my_cds)[,"AAACCTGAGCATCATC-1"]>0)
+sum(exprs(my_cds)[,"AAACCTGAGCATCATC-1"]>0)  # 注意这边的sum函数和colSum函数，rowSum函数(后两者为Matrix包的函数)是不同的。有为1，无为0
 summary(pData(my_cds)$num_genes_expressed)
 # standardise to Z-distribution，我们对每个细胞能够检测到的gene数的统计结果进行可视化
 x <- pData(my_cds)$num_genes_expressed
@@ -2047,18 +2092,19 @@ summary(x_1)
 
 ### Histogram of genes detected for cells
 library(ggplot2)
-library(cowplot) # # I like the default theme of cowplot
+library(cowplot) # # I like the default theme of cowplot，同时可以在一个面板上叠加不同的图
 df <- data.frame(x = x_1)
 ggplot(df, aes(x)) +       # Only a few cells have an abnormal number of expressed genes, such as the ones that are 5 standard deviations away from the mean.
-  geom_histogram(bins = 50) +
+  geom_histogram(bins = 50) +   # 通过直方图可以看出离群值有哪些（离群的细胞有哪些）
   geom_vline(xintercept = c(-2, 2), linetype = "dotted", color = 'red')
 
 ### We can also add our own metadata, such as the UMI count, to the phenoData.
 # add a UMI column into phenoData
 # use Matrix because data is in the sparse format
-pData(my_cds)$UMI <- Matrix::colSums(exprs(my_cds))  # 矩阵的纵向求和，得到每个细胞的UMI�数。在矩阵中每一个entry是一个细胞当中的一个gene的UMI个数
+pData(my_cds)$UMI <- Matrix::colSums(exprs(my_cds))  # 矩阵的纵向求和，得到每个细胞的UMI数。在矩阵中每一个entry是一个细胞当中的一个gene的UMI个数
 head(pData(my_cds))  # 在pData当中增加UMI一列
-ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()  # 我们可以滤除那些有很高UMI/gene的细胞，因为它们有可能是doublet
+# 绘制UMI和num_genes_expressed的散点图，理论上，对于那些有很高的UMI或者num_genes_expressed的细胞，应该排除在外，因为有可能是doublets，作者在这边省去了这步。
+ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()  # 我们可以滤除那些有很高UMI/gene的细胞，因为它们有可能是doublets。
 
 ####################################### Clustering cells without marker genes #######################################
 # However, since I don’t know of any specific markers for this dataset I will use the unsupervised approach. The first step is 
@@ -2067,19 +2113,29 @@ ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()  # 我们可
 # function calculates the mean and dispersion values (for each gene).
 # 一提到聚类，脑子里第一个问题就是，筛选有效基因进行第一层次的数据降维；大部分gene是不informative的
 # 我们一般会先绘制一个dispersion ～ mean expression的散点图，重点关注表达量高的gene或者HVG
+# 当然，筛选这些用于聚类和trajectory构建的方法有很多，只不过作者在这边使用了dispersionTable
 disp_table <- dispersionTable(my_cds) # 得到一个矩阵，为啥只有19434行？(总基因数是33694行)
 head(disp_table); dim(disp_table)
+## 返回的结果是一个数据框，包括empirical mean expression, empirical dispersion和the value estimated by the dispersion model(dispersion_fit).
 
 ## We will select genes, which have a mean expression >= 0.1, to use in the clustering step. The setOrderingFilter() function allows us 
 ## to indicate which genes we want to use for clustering. The plot_ordering_genes() function plots mean expression against the empirical 
 ## dispersion and highlights the set of genes (as black dots) that will be used for clustering.
+### 我们可以根据mean_expression和dispersion_empirical两个指标来进行筛选
 table(disp_table$mean_expression>=0.1) # 我们的筛选标准是mean expression >= 0.1，我们先来看一下统计结果，只有4012个gene用于cluster
-unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1) # 我们把满足
+table(disp_table$dispersion_empirical > disp_table$dispersion_fit)
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1 & dispersion_empirical > dispersion_fit) # 我们把满足mean_expression >= 1的挑选出来。
+dim(unsup_clustering_genes)
 
 fData(my_cds)
 my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id) # 这一步会在fData(my_cds)中增加use_for_ordering这个变量，存储T/F的结果
 fData(my_cds)
-plot_ordering_genes(my_cds)   # plot_ordering_genes默认将细胞以dispersion为纵轴，mean expression为横轴绘制散点图；用于后续cluster的gene黑色高亮
+plot_ordering_genes(my_cds)   # plot_ordering_genes默认将细胞以empirical dispersion为纵轴，mean expression为横轴绘制散点图；用于后续cluster的gene黑色高亮
+
+### 为了和Dave的结果一致，我们还是仅仅根据mean_expression来进行细胞的筛选。
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
+my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id)
+plot_ordering_genes(my_cds)
 
 ## It will take a lot of computational time to cluster 8,381 cells even when we have subsetted the total number of genes down to 4,012. 
 ## The usual approach is to perform dimension reduction (typically Principal Component Analysis [PCA]) and use the principal components 
