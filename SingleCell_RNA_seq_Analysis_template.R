@@ -343,6 +343,7 @@ VlnPlot(object = pancreas_1, features.plot = "MDS1", x.lab.rot = TRUE)
 
 # See how the first MDS dimension is correlated with the first PC dimension
 GenePlot(object = pancreas_1, gene1 = "MDS1", gene2 = "PC1")
+
 ################################### 找到有统计学显著性的主成分 #####################################
 # 主成分分析结束后需要确定哪些主成分所代表的基因可以进入下游分析，这里可以使用JackStraw做重抽样分析(默认每次重抽样1%的数据)。
 # Seurat randomly permutes a subset of the data (1% by default) and reruns PCA, constructing a null distribution of gene scores by 
@@ -455,7 +456,7 @@ head(pancreas_1.markers)
 pancreas_1.markers %>% group_by(cluster) %>% top_n(2, avg_logFC)
 # A tibble: 16 x 6
 # Groups:   cluster [8]
-pancreas_1.markers $cluster
+pancreas_1.markers$cluster
 
 # FindMarkers，针对某一个cluster，有一系列参数可以选择，然后又4种找差异基因的算法，使用test.use参数进行设置
 # 方法一： ROC test (“roc”)
@@ -525,11 +526,16 @@ FeaturePlot(object = pancreas_1,
             min.cutoff = 0.2,    # 为了增加对比度，可以设定min和max cutoff
             max.cutoff = 1)  
 
+FeaturePlot(object = pancreas_1, 
+            features.plot = c('vcam1a', 'vcam1b', 'piezo1', 'piezo2a.2', 'gpc4', 'anxa4'), 
+            cols.use = c("grey", "Red"), reduction.use = "tsne",
+            no.legend = F)  # 加上了表征表达量的图例 
 
 # Calculate gene-specific contrast levels based on quantiles of non-zero expression. Particularly useful when plotting 
 # multiple markers 图例的颜色是根据不同的gene的上下10%来界定的。
 FeaturePlot(object = pancreas_1, features.plot = c("ins", "gcga"), no.legend = FALSE, 
             min.cutoff = "q10", max.cutoff = "q90", dark.theme = T)
+
 
 # 在一张tSNE上同时展现两个gene，这个非常有用，可以展示比如bihormonal gene
 FeaturePlot(object = pancreas_1, features.plot = c("ins", "gcga"), 
